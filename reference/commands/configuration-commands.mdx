@@ -1,0 +1,412 @@
+---
+title: "Configuration Commands"
+description: "Commands for configuring Claude Code's model, UI, permissions, memory, and behaviour."
+---
+
+Configuration commands let you change how Claude Code behaves without editing files manually. Most open an interactive panel; a few accept a direct argument for quick changes from the prompt.
+
+<CardGroup cols={2}>
+  <Card title="/config" icon="sliders">
+    Interactive settings panel
+  </Card>
+  <Card title="/model" icon="microchip">
+    Switch the active AI model
+  </Card>
+  <Card title="/memory" icon="brain">
+    Edit project memory (CLAUDE.md)
+  </Card>
+  <Card title="/plan" icon="diagram-project">
+    Enter plan mode
+  </Card>
+  <Card title="/theme" icon="palette">
+    Change UI colour theme
+  </Card>
+  <Card title="/vim" icon="keyboard">
+    Toggle Vim keybindings
+  </Card>
+  <Card title="/effort" icon="gauge-high">
+    Set reasoning effort level
+  </Card>
+  <Card title="/doctor" icon="stethoscope">
+    Diagnose installation issues
+  </Card>
+  <Card title="/status" icon="circle-info">
+    Show full runtime status
+  </Card>
+  <Card title="/permissions" icon="shield-halved">
+    Manage tool permission rules
+  </Card>
+</CardGroup>
+
+---
+
+## /config
+
+Opens an interactive full-screen panel for browsing and editing all Claude Code settings. Changes are written to your user `settings.json` or the project-level `settings.json` depending on which scope you select.
+
+**Aliases:** `settings`  
+**Arguments:** none  
+**Non-interactive:** no
+
+### What you can configure
+
+- Default model and thinking/effort level
+- Output style (streaming, compact, verbose)
+- Colour theme and UI preferences
+- Sandbox restrictions (filesystem read/write and network)
+- Tool permission rules (always-allow, always-deny, always-ask)
+- Privacy settings
+- Editor integration preferences
+
+### Example
+
+```
+> /config
+```
+
+Opens the settings panel. Use arrow keys to navigate sections, Enter to edit a value, and `Esc` to close.
+
+<Tip>
+  You can also edit `~/.claude/settings.json` (user-level) or `.claude/settings.json` (project-level) directly in your editor. Changes take effect on the next command.
+</Tip>
+
+---
+
+## /model
+
+Switches the AI model used for the current session. Changes take effect immediately for the next message.
+
+**Arguments:** `[model name or shorthand]`  
+**Non-interactive:** no (opens an interactive picker when no argument is given)
+
+### Usage
+
+Without an argument, opens an interactive model selector:
+
+```
+> /model
+```
+
+With an argument, switches immediately:
+
+```
+> /model claude-opus-4-5
+> /model claude-sonnet-4-5
+> /model claude-haiku-4-5
+```
+
+Common shorthands:
+
+| Shorthand | Resolves to |
+|-----------|-------------|
+| `opus` | Latest Claude Opus model |
+| `sonnet` | Latest Claude Sonnet model |
+| `haiku` | Latest Claude Haiku model |
+
+### Persistence
+
+The selected model is not persisted across sessions by default. To set a permanent default, use `/config` or add `"model"` to your `settings.json`:
+
+```json
+{
+  "model": "claude-opus-4-5"
+}
+```
+
+---
+
+## /memory
+
+Opens the CLAUDE.md memory file editor. Claude Code reads `CLAUDE.md` files at session start and injects their contents into the system prompt, giving the model persistent project-specific context.
+
+**Arguments:** none  
+**Non-interactive:** no
+
+### Memory file hierarchy
+
+Claude Code looks for `CLAUDE.md` files at multiple levels:
+
+```
+~/.claude/CLAUDE.md          # global user memory
+<project-root>/CLAUDE.md     # project memory (auto-discovered)
+<subdirectory>/CLAUDE.md     # directory-scoped memory
+```
+
+Running `/memory` opens an interactive file selector showing all discovered memory files. Select one to open it in your `$EDITOR` (`$VISUAL` takes precedence).
+
+### What to put in CLAUDE.md
+
+```markdown
+# CLAUDE.md
+
+This file provides guidance to Claude Code when working in this repository.
+
+## Build & test commands
+- Build: `npm run build`
+- Test (all): `npm test`
+- Test (single): `npm test -- --testPathPattern=<filename>`
+- Lint: `npm run lint`
+
+## Architecture notes
+- API layer lives in `src/api/` — all routes use Express middleware from `src/middleware/`
+- Database models are in `src/models/` using Prisma ORM
+- Do not use `any` — always type API request/response shapes
+```
+
+<Note>
+  `/init` can generate an initial `CLAUDE.md` for your project by analysing the codebase. Run it at the root of any new project to get started quickly.
+</Note>
+
+---
+
+## /plan
+
+Enters plan mode for the current session, or views the current plan if one has already been created.
+
+**Arguments:** `[open | <description>]`  
+**Non-interactive:** no
+
+### Plan mode overview
+
+In plan mode, Claude Code switches to a read-only permission context. The model can explore files, run read-only commands, and draft a plan — but cannot write files or execute destructive commands without explicit user approval.
+
+Use plan mode when:
+- A task is complex enough to warrant designing an approach before touching code.
+- You want to review a proposed set of changes before they are made.
+- You are in a sensitive codebase and want a gate before any writes.
+
+### Usage
+
+Enter plan mode interactively:
+
+```
+> /plan
+```
+
+Open a specific plan by description:
+
+```
+> /plan open
+> /plan redesign the authentication flow
+```
+
+### Exiting plan mode
+
+Type `/plan` again to toggle back to normal mode, or approve the proposed changes when prompted. The session's permission mode is restored to its previous value.
+
+---
+
+## /theme
+
+Opens the theme picker. Claude Code ships with several built-in colour themes for the terminal UI.
+
+**Arguments:** none  
+**Non-interactive:** no
+
+### Available themes
+
+| Theme | Description |
+|-------|-------------|
+| `dark` | Default dark background |
+| `light` | Light background for bright terminals |
+| `solarized-dark` | Solarized dark palette |
+| `solarized-light` | Solarized light palette |
+| `dracula` | Dracula colour scheme |
+
+```
+> /theme
+```
+
+Select a theme with arrow keys and press Enter to apply. Changes take effect immediately and are saved to your settings.
+
+---
+
+## /vim
+
+Toggles between **Vim mode** and **Normal mode** for the REPL input line. In Vim mode, the input respects standard Vim motion commands (`h`, `j`, `k`, `l`, `w`, `b`, `0`, `$`, `i`, `a`, `Esc`, etc.).
+
+**Arguments:** none  
+**Non-interactive:** no
+
+```
+> /vim
+
+  Input mode: Vim  (press Esc for Normal mode, i for Insert mode)
+```
+
+Toggle it off again with another `/vim` call. The setting is persisted to your user configuration.
+
+---
+
+## /effort
+
+Sets the reasoning effort level for the model. Higher effort levels increase thinking depth and token usage; lower levels are faster and cheaper.
+
+**Arguments:** `[low | medium | high | max | auto]`  
+**Non-interactive:** no (opens picker if no argument)
+
+| Level | Behaviour |
+|-------|-----------|
+| `auto` | Claude Code decides based on task complexity (default) |
+| `low` | Minimal thinking; fastest and cheapest |
+| `medium` | Moderate thinking |
+| `high` | Extended thinking enabled |
+| `max` | Maximum thinking budget |
+
+### Examples
+
+```
+> /effort high
+
+  Effort level set to: high
+```
+
+```
+> /effort
+# Opens interactive picker
+```
+
+<Note>
+  Effort levels only apply to models that support extended thinking (Claude 3.7+ Sonnet/Opus). For other models the setting is silently ignored.
+</Note>
+
+---
+
+## /doctor
+
+Runs a diagnostic check of your Claude Code installation, configuration, and environment. Reports any issues with missing dependencies, misconfigured settings, API connectivity, or outdated binaries.
+
+**Arguments:** none  
+**Non-interactive:** no  
+**Disabled by:** `DISABLE_DOCTOR_COMMAND=1` environment variable
+
+### What it checks
+
+- Claude Code binary version and installation path
+- Node.js / Bun runtime version
+- API key validity and connectivity
+- `settings.json` schema validity (user and project levels)
+- MCP server connection status
+- Required shell utilities (`git`, `rg`, etc.)
+- Terminal capability detection
+
+### Example output
+
+```
+> /doctor
+
+  ✓ Claude Code  v1.2.3  ~/.local/bin/claude
+  ✓ Runtime      Bun 1.1.8
+  ✓ API key      Valid (claude.ai subscription)
+  ✓ Connectivity  api.anthropic.com  200 OK
+  ✓ ripgrep      rg 14.1.0
+  ✗ MCP server   "filesystem" — connection refused
+    → Check that the server process is running and the path in settings.json is correct.
+```
+
+---
+
+## /status
+
+Displays a comprehensive status summary for the current session: version, model, account, API connectivity, active tools, and permission mode.
+
+**Arguments:** none  
+**Immediate:** yes (shown without waiting for a new turn)
+
+```
+> /status
+
+  Claude Code  v1.2.3
+  Model        claude-opus-4-5  (effort: auto)
+  Account      user@example.com  (Pro)
+  API          api.anthropic.com  ✓
+  Permission   default
+  MCP servers  github (connected), filesystem (connected)
+  Tools        Read, Edit, Write, Glob, Search, Bash, Agent, ...
+```
+
+---
+
+## /permissions
+
+Opens the permission management panel for reviewing and editing tool allow/deny rules. These rules control which tools Claude Code can use without prompting for approval.
+
+**Aliases:** `allowed-tools`  
+**Arguments:** none
+
+### Permission rule types
+
+| Rule type | Behaviour |
+|-----------|-----------|
+| `always_allow` | Tool use is approved automatically, no prompt shown |
+| `always_deny` | Tool use is blocked outright |
+| `always_ask` | User is always prompted, even if auto-approval is on |
+
+Rules can be scoped to specific tools, file paths, or shell command prefixes. Examples from `settings.json`:
+
+```json
+{
+  "permissions": {
+    "allow": [
+      "Read",
+      "Glob",
+      "Search",
+      "Bash(git log*)",
+      "Bash(npm test*)",
+      "mcp__github__list_issues"
+    ],
+    "deny": [
+      "Bash(rm -rf*)",
+      "Bash(git push --force*)"
+    ]
+  }
+}
+```
+
+---
+
+## /hooks
+
+Shows the currently configured hooks — shell commands or scripts that Claude Code runs before or after specific tool events.
+
+**Arguments:** none  
+**Immediate:** yes
+
+Hooks are defined in `settings.json` under the `hooks` key. The `/hooks` command provides a read-only view; edit the file directly to add or change hooks.
+
+```json
+{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [{ "type": "command", "command": "echo 'Running bash command'" }]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "Edit|Write",
+        "hooks": [{ "type": "command", "command": "npm run lint --silent" }]
+      }
+    ]
+  }
+}
+```
+
+---
+
+## /init
+
+Analyses the current repository and creates (or improves) a `CLAUDE.md` memory file. Prompts you for which components to set up — memory file, skills, and hooks.
+
+**Arguments:** none
+
+```
+> /init
+```
+
+Claude Code reads `README.md`, existing config files, and the project structure to generate focused, non-generic guidance. The result is written to `CLAUDE.md` in the project root.
+
+<Tip>
+  Run `/init` when starting work on an unfamiliar codebase. The generated `CLAUDE.md` gives future Claude Code sessions the context they need to be productive immediately.
+</Tip>

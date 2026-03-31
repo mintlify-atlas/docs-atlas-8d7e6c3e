@@ -1,0 +1,189 @@
+---
+title: "Remote Control & Kill Switches"
+description: "Analysis of Claude Code's remote management and kill switch mechanisms, based on v2.1.88 decompiled source code."
+---
+
+<Warning>
+  This page contains research findings derived from decompiled source code of `@anthropic-ai/claude-code` v2.1.88. It is intended for educational and research purposes only. All source code is the intellectual property of Anthropic.
+</Warning>
+
+## Overview
+
+Claude Code implements multiple remote control mechanisms that allow Anthropic and enterprise administrators to modify application behavior without explicit user consent. These mechanisms operate largely invisibly during normal use.
+
+---
+
+## Remote Managed Settings
+
+### Architecture
+
+Every eligible session fetches a settings payload from Anthropic's servers on startup and then polls hourly:
+
+```
+GET /api/claude_code/settings
+```
+
+Source: `src/services/remoteManagedSettings/index.ts:105-107`
+
+### Polling Behavior
+
+```typescript
+// src/services/remoteManagedSettings/index.ts:52-54
+const SETTINGS_TIMEOUT_MS = 10000
+const DEFAULT_MAX_RETRIES = 5
+const POLLING_INTERVAL_MS = 60 * 60 * 1000 // 1 hour
+```
+
+Settings are fetched with up to 5 retries per attempt and refreshed every hour for the lifetime of the session.
+
+### Eligibility
+
+| User type | Eligible |
+|---|---|
+| Console users (API key) | All eligible |
+| OAuth — Enterprise / C4E | Eligible |
+| OAuth — Team | Eligible |
+| OAuth — Pro / Max | Not eligible |
+
+### Accept-or-Die Dialog
+
+<Warning>
+  When remote settings contain changes flagged as "dangerous," a blocking modal dialog is shown to the user. **Rejecting the dialog terminates the application.** There is no way to continue using Claude Code while declining the pushed settings.
+</Warning>
+
+```typescript
+// src/services/remoteManagedSettings/securityCheck.tsx:67-73
+export function handleSecurityCheckResult(result: SecurityCheckResult): boolean {
+  if (result === 'rejected') {
+    gracefulShutdownSync(1)  // Exit with code 1
+    return false
+  }
+  return true
+}
+```
+
+The only options presented to the user are: **accept the remote settings**, or **Claude Code exits**.
+
+### Graceful Degradation
+
+If the remote settings endpoint is unreachable, previously cached settings are applied:
+
+```typescript
+// src/services/remoteManagedSettings/index.ts:433-436
+if (cachedSettings) {
+  logForDebugging('Remote settings: Using stale cache after fetch failure')
+  setSessionCache(cachedSettings)
+  return cachedSettings
+}
+```
+
+Once remote settings have been applied and cached, they persist through subsequent server outages.
+
+---
+
+## Feature Flag Kill Switches
+
+Multiple features can be remotely disabled or re-enabled via GrowthBook feature flags without any user interaction or notification.
+
+### Kill Switch Reference
+
+| Kill Switch | Flag Name | Scope | Effect |
+|---|---|---|---|
+| Bypass permissions | `bypassPermissionsKillswitch` (Statsig gate) | All users | Disables the ability to bypass tool permission checks |
+| Auto mode | `autoModeCircuitBroken` state | All users | Prevents re-entry into auto/yolo mode |
+| Fast mode | `/api/claude_code_penguin_mode` + `tengu_penguins_off` | All users | Permanently disables fast mode for a user |
+| Analytics sink | `tengu_frond_boric` | All users | Stops all analytics output |
+| Agent teams | `tengu_amber_flint` | All users | Disables agent swarm functionality |
+| Voice mode | `tengu_amber_quartz_disabled` | All users | Emergency off for voice mode |
+
+### Bypass Permissions Kill Switch
+
+```typescript
+// src/utils/permissions/bypassPermissionsKillswitch.ts
+// Checks a Statsig gate to disable bypass permissions
+```
+
+Can disable permission bypass capabilities without user consent.
+
+### Auto Mode Circuit Breaker
+
+```typescript
+// src/utils/permissions/autoModeState.ts
+// autoModeCircuitBroken state prevents re-entry to auto mode
+```
+
+Auto/yolo mode can be remotely broken, requiring an explicit reset.
+
+### Analytics Sink Kill Switch
+
+```typescript
+// src/services/analytics/sinkKillswitch.ts:4
+const SINK_KILLSWITCH_CONFIG_NAME = 'tengu_frond_boric'
+```
+
+Can remotely stop all analytics output — notably, this kill switch can itself be activated without user knowledge.
+
+### Voice Mode Kill Switch
+
+```typescript
+// src/voice/voiceModeEnabled.ts:21
+// 'tengu_amber_quartz_disabled' — emergency off for voice mode
+```
+
+Described in code as an emergency switch for voice mode.
+
+---
+
+## Model Override System
+
+Anthropic can remotely control which model internal employees use, and can push additional system prompt content:
+
+```typescript
+// src/utils/model/antModels.ts:32-33
+// @[MODEL LAUNCH]: Update tengu_ant_model_override with new ant-only models
+// @[MODEL LAUNCH]: Add the codename to scripts/excluded-strings.txt
+```
+
+The `tengu_ant_model_override` GrowthBook flag can:
+- Set the default model
+- Set the default effort level
+- **Append arbitrary content to the system prompt**
+- Define custom model aliases
+
+---
+
+## Penguin Mode (Fast Mode Control)
+
+Fast mode availability is determined by a dedicated endpoint, separate from the main settings fetch:
+
+```typescript
+// src/utils/fastMode.ts
+// GET /api/claude_code_penguin_mode
+// If API indicates disabled, permanently disabled for user
+```
+
+Multiple flags control fast mode availability:
+- `tengu_penguins_off`
+- `tengu_marble_sandcastle`
+
+<Info>
+  "Penguin mode" is the internal name for fast mode, following the animal codename convention used throughout the codebase.
+</Info>
+
+---
+
+## Summary
+
+<Warning>
+  The remote control infrastructure operates largely without user visibility or consent. GrowthBook feature flags can alter behavior for any user. Pushed settings that are rejected result in application termination.
+</Warning>
+
+| Mechanism | Scope | User Consent |
+|---|---|---|
+| Remote managed settings | Enterprise / Team subscribers | Accept or exit |
+| GrowthBook feature flags | All users | None |
+| Kill switches | All users | None |
+| Model override | Internal (`ant`) users | None |
+| Fast mode control | All users | None |
+
+Enterprise administrators can enforce policies that users cannot override. Anthropic can remotely change behavior for any user through GrowthBook feature flags, with no in-app notification of the change.

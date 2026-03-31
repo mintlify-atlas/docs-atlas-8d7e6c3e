@@ -1,0 +1,278 @@
+---
+title: "Search Tools"
+description: "Tools for finding files by name pattern and searching file contents by regular expression."
+---
+
+Claude Code provides two dedicated search tools — **GlobTool** and **GrepTool** — plus a meta-search tool **ToolSearchTool** for discovering the right built-in tool to use. These tools are faster, safer, and more token-efficient than shelling out to `find` or `grep` via BashTool.
+
+<CardGroup cols={3}>
+  <Card title="GlobTool" icon="folder-magnifying-glass">
+    Find files by name or path pattern
+  </Card>
+  <Card title="GrepTool" icon="magnifying-glass-location">
+    Search file contents with regex (powered by ripgrep)
+  </Card>
+  <Card title="ToolSearchTool" icon="wrench-simple">
+    Discover which built-in tool to use for a task
+  </Card>
+</CardGroup>
+
+---
+
+## GlobTool
+
+Finds files whose paths match a glob pattern. Results are sorted by modification time (most recently changed first) to surface relevant files quickly.
+
+**Tool name:** `Glob`  
+**Read-only:** yes  
+**Concurrency-safe:** yes  
+**Destructive:** no
+
+### Parameters
+
+<ParamField path="pattern" type="string" required>
+  The glob pattern to match file paths against. Supports `*`, `**`, `?`, and brace expansions, e.g. `"**/*.ts"`, `"src/**/*.{ts,tsx}"`, `"*.config.js"`.
+</ParamField>
+
+<ParamField path="path" type="string">
+  Directory to search in. Defaults to the current working directory when omitted. Must be a valid directory path — do not pass `"undefined"` or `"null"`.
+</ParamField>
+
+### Return value
+
+<ResponseField name="filenames" type="string[]">
+  Relative paths (relative to the current working directory) of matching files.
+</ResponseField>
+
+<ResponseField name="numFiles" type="number">
+  Total number of files returned.
+</ResponseField>
+
+<ResponseField name="truncated" type="boolean">
+  `true` when results were capped (default cap: 100 files). Use a more specific pattern or `path` to narrow the search.
+</ResponseField>
+
+<ResponseField name="durationMs" type="number">
+  Wall-clock time to execute the search in milliseconds.
+</ResponseField>
+
+### Usage examples
+
+Find all TypeScript files in a project:
+
+```json
+{
+  "tool": "Glob",
+  "input": {
+    "pattern": "**/*.ts"
+  }
+}
+```
+
+Find config files in a specific directory:
+
+```json
+{
+  "tool": "Glob",
+  "input": {
+    "pattern": "*.config.{js,ts,mjs}",
+    "path": "/home/user/project"
+  }
+}
+```
+
+<Tip>
+  When results are truncated, add a `path` to constrain the search scope or make the glob pattern more specific (e.g. `"src/**/*.test.ts"` instead of `"**/*.test.ts"`).
+</Tip>
+
+---
+
+## GrepTool
+
+Searches file contents for a regular expression pattern. Internally uses **ripgrep (`rg`)** for high performance, with automatic exclusion of VCS directories (`.git`, `.svn`, `.hg`, `.bzr`, `.jj`, `.sl`).
+
+**Tool name:** `Search`  
+**Read-only:** yes  
+**Concurrency-safe:** yes  
+**Destructive:** no
+
+### Parameters
+
+<ParamField path="pattern" type="string" required>
+  A regular expression pattern to search for. Full ripgrep regex syntax is supported.
+</ParamField>
+
+<ParamField path="path" type="string">
+  File or directory to search in (`rg PATH`). Defaults to the current working directory.
+</ParamField>
+
+<ParamField path="glob" type="string">
+  Glob pattern to filter which files are searched, e.g. `"*.js"` or `"*.{ts,tsx}"`. Maps to `rg --glob`.
+</ParamField>
+
+<ParamField path="output_mode" type="string" default="files_with_matches">
+  Controls the format of results:
+  - `"files_with_matches"` — list of file paths that contain at least one match (default)
+  - `"content"` — matched lines with optional surrounding context lines
+  - `"count"` — number of matches per file
+</ParamField>
+
+<ParamField path="-B" type="number">
+  Lines of context **before** each match (`rg -B`). Only used when `output_mode` is `"content"`.
+</ParamField>
+
+<ParamField path="-A" type="number">
+  Lines of context **after** each match (`rg -A`). Only used when `output_mode` is `"content"`.
+</ParamField>
+
+<ParamField path="-C" type="number">
+  Lines of context **before and after** each match (`rg -C`). Alias for `context`. Overrides `-B`/`-A` when specified. Only used when `output_mode` is `"content"`.
+</ParamField>
+
+<ParamField path="context" type="number">
+  Alias for `-C`. Lines of symmetric context around each match.
+</ParamField>
+
+<ParamField path="-n" type="boolean" default="true">
+  Show line numbers in `"content"` mode output (`rg -n`).
+</ParamField>
+
+<ParamField path="-i" type="boolean" default="false">
+  Case-insensitive search (`rg -i`).
+</ParamField>
+
+<ParamField path="type" type="string">
+  Restrict search to a ripgrep file type (`rg --type`). Examples: `"js"`, `"py"`, `"rust"`, `"go"`, `"java"`. More efficient than `glob` for standard language types.
+</ParamField>
+
+<ParamField path="head_limit" type="number" default="250">
+  Limit output to the first N lines/entries, equivalent to `| head -N`. Pass `0` for unlimited (use sparingly — large results consume significant context).
+</ParamField>
+
+<ParamField path="offset" type="number" default="0">
+  Skip the first N lines/entries before applying `head_limit`. Equivalent to `| tail -n +N | head -N`. Use together with `head_limit` for pagination.
+</ParamField>
+
+<ParamField path="multiline" type="boolean" default="false">
+  Enable multiline mode where `.` matches newlines and patterns can span lines (`rg -U --multiline-dotall`).
+</ParamField>
+
+### Return value
+
+<ResponseField name="mode" type="string">
+  The output mode that was used: `"files_with_matches"`, `"content"`, or `"count"`.
+</ResponseField>
+
+<ResponseField name="filenames" type="string[]">
+  Matching file paths (relative to CWD). Populated for `"files_with_matches"` mode. Sorted by most recently modified.
+</ResponseField>
+
+<ResponseField name="numFiles" type="number">
+  Number of files returned.
+</ResponseField>
+
+<ResponseField name="content" type="string">
+  Matched output as a string. Populated for `"content"` and `"count"` modes.
+</ResponseField>
+
+<ResponseField name="numLines" type="number">
+  Number of output lines. Populated for `"content"` mode.
+</ResponseField>
+
+<ResponseField name="numMatches" type="number">
+  Total match count across all files. Populated for `"count"` mode.
+</ResponseField>
+
+<ResponseField name="appliedLimit" type="number">
+  The `head_limit` that was applied, set only when truncation actually occurred.
+</ResponseField>
+
+<ResponseField name="appliedOffset" type="number">
+  The `offset` that was applied, set when `offset > 0`.
+</ResponseField>
+
+### ripgrep under the hood
+
+GrepTool delegates to ripgrep (`rg`) and mirrors its semantics closely. Key behaviours:
+
+- Lines are capped at **500 characters** to avoid bloating results with minified files or base64 blobs.
+- VCS directories are excluded automatically via `--glob !.git --glob !.svn` etc.
+- Permission-based ignore patterns from Claude Code settings are forwarded as additional `--glob !...` rules.
+- In `"files_with_matches"` mode, results are sorted by file modification time before `head_limit` is applied.
+
+### Usage examples
+
+Find all files containing a React hook:
+
+```json
+{
+  "tool": "Search",
+  "input": {
+    "pattern": "useEffect",
+    "output_mode": "files_with_matches",
+    "type": "tsx"
+  }
+}
+```
+
+Show matching lines with context in a specific directory:
+
+```json
+{
+  "tool": "Search",
+  "input": {
+    "pattern": "TODO|FIXME|HACK",
+    "path": "/home/user/project/src",
+    "output_mode": "content",
+    "context": 2,
+    "head_limit": 100
+  }
+}
+```
+
+Case-insensitive search with pagination:
+
+```json
+{
+  "tool": "Search",
+  "input": {
+    "pattern": "deprecated",
+    "output_mode": "content",
+    "-i": true,
+    "head_limit": 50,
+    "offset": 50
+  }
+}
+```
+
+---
+
+## ToolSearchTool
+
+A meta-tool that searches the descriptions of all available built-in tools to help the model find the right tool for a given task. Useful when an unfamiliar task might be covered by a lesser-known built-in.
+
+**Tool name:** `ToolSearch`  
+**Read-only:** yes  
+**Concurrency-safe:** yes  
+**Destructive:** no
+
+### Parameters
+
+<ParamField path="query" type="string" required>
+  A natural-language description of the task you want to accomplish. The tool matches against the `searchHint` field registered on each built-in tool.
+</ParamField>
+
+### Return value
+
+An ordered list of tool names and their descriptions ranked by relevance to `query`.
+
+### Usage example
+
+```json
+{
+  "tool": "ToolSearch",
+  "input": {
+    "query": "read a specific resource from an MCP server"
+  }
+}
+```

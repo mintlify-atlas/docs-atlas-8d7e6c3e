@@ -1,0 +1,200 @@
+---
+title: "MCP Integration"
+description: "Model Context Protocol server integration — transport types, client lifecycle, authentication, and tool registration."
+---
+
+Claude Code integrates with [Model Context Protocol](https://modelcontextprotocol.io) (MCP) servers through `MCPConnectionManager.tsx`. MCP servers extend Claude Code with additional tools, resources, and capabilities. Any tool exposed by an MCP server is automatically registered and available to the agent.
+
+## Architecture
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                  MCP ARCHITECTURE                            │
+│                                                             │
+│  MCPConnectionManager.tsx                                   │
+│    ├── Server Discovery (config from settings.json)         │
+│    │     ├── stdio  → spawn child process                   │
+│    │     ├── sse    → HTTP EventSource                      │
+│    │     ├── http   → Streamable HTTP                       │
+│    │     ├── ws     → WebSocket                             │
+│    │     └── sdk    → in-process transport                  │
+│    │                                                        │
+│    ├── Client Lifecycle                                      │
+│    │     ├── connect → initialize → list tools              │
+│    │     ├── tool calls via MCPTool wrapper                  │
+│    │     └── disconnect / reconnect with backoff            │
+│    │                                                        │
+│    ├── Authentication                                       │
+│    │     ├── OAuth 2.0 flow (McpOAuthConfig)                │
+│    │     ├── Cross-App Access (XAA / SEP-990)               │
+│    │     └── API key via headers                            │
+│    │                                                        │
+│    └── Tool Registration                                    │
+│          ├── mcp__<server>__<tool> naming convention         │
+│          ├── Dynamic schema from MCP server                  │
+│          ├── Permission passthrough to Claude Code           │
+│          └── Resource listing (ListMcpResourcesTool)         │
+│                                                             │
+└─────────────────────────────────────────────────────────────┘
+```
+
+## Configuring an MCP Server
+
+MCP servers are declared in `settings.json` under the `mcpServers` key. Each entry specifies the server name, transport, and connection parameters:
+
+```json
+{
+  "mcpServers": {
+    "my-server": {
+      "type": "stdio",
+      "command": "npx",
+      "args": ["-y", "@my-org/my-mcp-server"],
+      "env": {
+        "MY_API_KEY": "..."
+      }
+    },
+    "remote-server": {
+      "type": "sse",
+      "url": "https://api.example.com/mcp/sse",
+      "headers": {
+        "Authorization": "Bearer ${MY_TOKEN}"
+      }
+    },
+    "ws-server": {
+      "type": "ws",
+      "url": "wss://api.example.com/mcp/ws"
+    }
+  }
+}
+```
+
+<Info>
+  Environment variables referenced with `${VAR_NAME}` syntax in `settings.json` are expanded at connection time by `src/services/mcp/envExpansion.ts`.
+</Info>
+
+## Transport Types
+
+<Tabs>
+  <Tab title="stdio">
+    Claude Code spawns a child process and communicates over its `stdin`/`stdout`. This is the most common transport for local MCP servers.
+
+    ```json
+    {
+      "type": "stdio",
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-filesystem", "/tmp"]
+    }
+    ```
+
+    The child process is managed by `client.ts` using the `@modelcontextprotocol/sdk` StdioClientTransport. The process is killed when the MCP connection is closed.
+  </Tab>
+  <Tab title="sse (HTTP EventSource)">
+    Connects to an MCP server over HTTP using the Server-Sent Events (SSE) protocol. The client establishes a persistent GET connection to receive server-pushed events.
+
+    ```json
+    {
+      "type": "sse",
+      "url": "https://api.example.com/mcp/sse",
+      "headers": {
+        "Authorization": "Bearer mytoken"
+      }
+    }
+    ```
+  </Tab>
+  <Tab title="http (Streamable HTTP)">
+    Uses the newer Streamable HTTP transport from the MCP spec. Supports bidirectional streaming over standard HTTP POST requests.
+
+    ```json
+    {
+      "type": "http",
+      "url": "https://api.example.com/mcp",
+      "headers": {
+        "x-api-key": "mykey"
+      }
+    }
+    ```
+  </Tab>
+  <Tab title="ws (WebSocket)">
+    Connects over a persistent WebSocket connection. Suitable for low-latency or high-frequency tool calls.
+
+    ```json
+    {
+      "type": "ws",
+      "url": "wss://api.example.com/mcp/ws"
+    }
+    ```
+  </Tab>
+  <Tab title="sdk (in-process)">
+    Runs the MCP server in-process using `InProcessTransport.ts` or `SdkControlTransport.ts`. Used internally by Claude Code for tightly-coupled integrations such as `vscodeSdkMcp.ts`.
+
+    No `settings.json` configuration is needed — these servers are registered programmatically.
+  </Tab>
+</Tabs>
+
+## Connecting to an MCP Server
+
+<Steps>
+  <Step title="Server discovery">
+    On startup, `MCPConnectionManager.tsx` reads `mcpServers` from `settings.json` (and any workspace-level `claude.json` overrides). Each entry becomes a `MCPServerConnection` record.
+  </Step>
+  <Step title="Transport initialization">
+    Based on the `type` field, the appropriate transport is created: `StdioClientTransport` spawns the process; `SSEClientTransport` opens the event stream; `StreamableHTTPClientTransport` or `WebSocketClientTransport` establishes the network connection.
+  </Step>
+  <Step title="MCP handshake">
+    The MCP client sends an `initialize` request with the client capabilities. The server responds with its own capabilities and protocol version. This follows the MCP spec initialization sequence.
+  </Step>
+  <Step title="Tool listing">
+    After initialization, the client calls `tools/list` to enumerate all tools the server exposes. Each tool's name, description, and JSON Schema input spec are captured.
+  </Step>
+  <Step title="Tool registration">
+    Each server tool is wrapped in an `MCPTool` instance and registered into the tool dispatch map using the naming convention `mcp__<server>__<tool>`. The tool's JSON Schema becomes its Zod validation schema.
+  </Step>
+  <Step title="Tool calls">
+    When the agent invokes an MCP tool, `MCPTool.call()` forwards the request to the MCP server over the established transport and streams the result back as a `tool_result` block.
+  </Step>
+  <Step title="Reconnect on failure">
+    If the connection drops, `MCPConnectionManager` retries with exponential backoff. The manager tracks connection state and surfaces errors through the `/mcp` slash command.
+  </Step>
+</Steps>
+
+## Tool Naming Convention
+
+MCP tools are registered under the pattern `mcp__<server>__<tool>`:
+
+| MCP server name | MCP tool name | Registered as |
+|---|---|---|
+| `filesystem` | `read_file` | `mcp__filesystem__read_file` |
+| `github` | `create_pull_request` | `mcp__github__create_pull_request` |
+| `my-server` | `search` | `mcp__my-server__search` |
+
+This namespacing prevents collisions between tools from different MCP servers and between MCP tools and Claude Code's built-in tools.
+
+## Resource Listing
+
+Beyond tools, MCP servers can expose **resources** — files, databases, or other data sources. Two built-in tools wrap this capability:
+
+| Tool | Description |
+|---|---|
+| `ListMcpResourcesTool` | Lists all resources available from a connected MCP server |
+| `ReadMcpResourceTool` | Reads the content of a specific MCP resource by URI |
+
+## Authentication
+
+Claude Code supports three authentication methods for MCP servers:
+
+**API key via headers** — the simplest option; specify an `Authorization` or `x-api-key` header in the server config.
+
+**OAuth 2.0** — configured via `McpOAuthConfig` in `src/services/mcp/auth.ts`. Claude Code handles the full authorization code flow, including token storage and refresh. The OAuth callback port is managed by `oauthPort.ts`.
+
+**Cross-App Access (XAA / SEP-990)** — an Anthropic-specific flow implemented in `xaa.ts` and `xaaIdpLogin.ts`. Used for Claude.ai-hosted MCP servers where Claude Code authenticates as an Anthropic-identity client. The spec reference is SEP-990.
+
+## Managing MCP Connections
+
+The `/mcp` slash command provides a live view of all configured MCP servers and their connection status. From the `/mcp` UI you can:
+
+- View which servers are connected, connecting, or errored
+- See the list of tools registered from each server
+- Manually trigger a reconnect
+- View raw connection error details
+
+The connection state is managed by `useManageMCPConnections.ts` and surfaced through the React/Ink terminal UI.

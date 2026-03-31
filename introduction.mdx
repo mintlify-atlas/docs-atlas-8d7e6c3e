@@ -1,0 +1,67 @@
+---
+title: "Introduction"
+description: "Overview of Claude Code — what it is, what it does, and what you'll find in this research repository."
+---
+
+Claude Code is an AI coding assistant CLI built by Anthropic. It wraps the Claude API in a production-grade agent harness that can read, edit, and execute code across your local filesystem, all from the terminal.
+
+This documentation is based on the decompiled TypeScript source extracted from the published npm package `@anthropic-ai/claude-code` version **2.1.88**. The source is provided strictly for technical research and educational purposes.
+
+<Warning>
+All source code in this repository is the intellectual property of **Anthropic and Claude**. Commercial use is strictly prohibited. This repository exists for research, study, and educational exchange only. If any content infringes your rights, contact the repository owner for immediate removal.
+</Warning>
+
+## What Claude Code is
+
+Claude Code is a terminal-native AI agent. You give it a prompt — or open an interactive session — and it uses a built-in tool system to read files, run shell commands, search codebases, call external APIs, and write changes back to disk. Everything runs locally, coordinated by the agent loop in `query.ts`.
+
+The compiled CLI ships as a single 12 MB `cli.js` bundle requiring only Node.js >= 18. The `src/` directory in this repository contains the unbundled TypeScript source extracted from the npm tarball.
+
+## Repository stats
+
+| Item | Count |
+|------|-------|
+| Source files (`.ts` / `.tsx`) | ~1,884 |
+| Lines of code | ~512,664 |
+| Largest single file | `query.ts` (~785 KB) |
+| Built-in tools | 40+ |
+| Slash commands | 80+ |
+| npm dependencies | ~192 packages |
+| Runtime | Node.js >= 18 (compiled Bun bundle) |
+
+## Major capabilities
+
+<CardGroup cols={2}>
+  <Card title="Agent loop" icon="arrows-rotate" href="/concepts/agent-loop">
+    A `while`-loop that calls the Claude API, checks `stop_reason`, executes tools, appends results, and repeats — wrapped with streaming, compaction, and permission checks.
+  </Card>
+  <Card title="40+ built-in tools" icon="wrench" href="/reference/tools/file-operations">
+    File read/write/edit, glob, grep, bash execution, web fetch, web search, MCP protocol, sub-agent spawning, todo management, and more.
+  </Card>
+  <Card title="80+ slash commands" icon="terminal" href="/reference/commands/overview">
+    In-session commands for authentication, memory, configuration, MCP servers, context compaction, plan mode, session resumption, and code review.
+  </Card>
+  <Card title="Multi-agent system" icon="network-wired" href="/architecture/multi-agent">
+    Spawn sub-agents as child processes or in-process teammates. Coordinate work via a shared task board and message inbox.
+  </Card>
+  <Card title="MCP integration" icon="plug" href="/architecture/mcp-integration">
+    Connect to external MCP servers over stdio, SSE, HTTP, or WebSocket. Tools are registered dynamically under the `mcp__<server>__<tool>` naming convention.
+  </Card>
+  <Card title="Session persistence" icon="database" href="/architecture/session-persistence">
+    Every conversation is appended to a JSONL transcript under `~/.claude/projects/`. Resume any session with `--continue` or `--resume <id>`.
+  </Card>
+  <Card title="Permission model" icon="shield-halved" href="/concepts/permission-model">
+    Three-layer authorization: pre-tool hooks → allow/deny rules → interactive prompt. Each tool reports whether it is read-only, destructive, or concurrency-safe.
+  </Card>
+  <Card title="Context management" icon="compress" href="/concepts/context-management">
+    Three compression strategies — `autoCompact`, `snipCompact`, and `contextCollapse` — keep long sessions within the model's context window.
+  </Card>
+</CardGroup>
+
+## Repository purpose
+
+This repository contains the decompiled TypeScript source of `@anthropic-ai/claude-code` v2.1.88, published to npm as a 12 MB bundled `cli.js`. The `src/` directory was extracted from the npm tarball for research purposes.
+
+The source is **not directly compilable** from this repository alone. 108 feature-gated internal modules were dead-code-eliminated by Bun at Anthropic's build time and are not recoverable from any published artifact. See [Installation](/installation) for what is and isn't possible when building from source.
+
+The repository also includes [deep analysis reports](/reference/analysis/telemetry-privacy) covering telemetry, hidden features, undercover mode, remote control mechanisms, and the future roadmap derived from reading the source.

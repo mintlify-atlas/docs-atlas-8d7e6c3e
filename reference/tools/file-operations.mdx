@@ -1,0 +1,309 @@
+---
+title: "File Operation Tools"
+description: "Tools for reading, writing, and editing files on the local filesystem."
+---
+
+Claude Code ships four built-in tools for interacting with files: **FileReadTool**, **FileEditTool**, **FileWriteTool**, and **NotebookEditTool**. Together they cover the full read-modify-write loop for text files, images, PDFs, and Jupyter notebooks.
+
+<CardGroup cols={2}>
+  <Card title="FileReadTool" icon="file-magnifying-glass">
+    Read text, images, PDFs, and notebooks from disk
+  </Card>
+  <Card title="FileEditTool" icon="file-pen">
+    In-place string replacement inside an existing file
+  </Card>
+  <Card title="FileWriteTool" icon="floppy-disk">
+    Create or fully overwrite a file
+  </Card>
+  <Card title="NotebookEditTool" icon="notebook">
+    Add, replace, or delete Jupyter notebook cells
+  </Card>
+</CardGroup>
+
+---
+
+## FileReadTool
+
+Reads a file from the local filesystem and returns its contents. Handles plain text, images (PNG, JPEG, GIF, WebP), PDFs, and Jupyter notebooks (`.ipynb`) transparently based on file extension.
+
+**Tool name:** `Read`  
+**Read-only:** yes  
+**Concurrency-safe:** yes  
+**Destructive:** no
+
+### Parameters
+
+<ParamField path="file_path" type="string" required>
+  Absolute path to the file to read. Tilde (`~`) and relative segments are expanded automatically.
+</ParamField>
+
+<ParamField path="offset" type="number">
+  Line number (1-indexed) to start reading from. Omit to read from the beginning. Only relevant for text files.
+</ParamField>
+
+<ParamField path="limit" type="number">
+  Maximum number of lines to return. Omit to read to the end of the file (subject to the per-session token limit).
+</ParamField>
+
+<ParamField path="pages" type="string">
+  Page range for PDF files, e.g. `"1-5"`, `"3"`, or `"10-20"`. Only applies to `.pdf` files. Maximum 20 pages per request. Pages are 1-indexed.
+</ParamField>
+
+### Return value
+
+The return type is a discriminated union keyed on `type`:
+
+| `type` | Description |
+|--------|-------------|
+| `text` | Plain text with `filePath`, `content`, `numLines`, `startLine`, `totalLines` |
+| `image` | Base64-encoded image with `base64`, media type, `originalSize`, and optional `dimensions` |
+| `notebook` | Jupyter notebook with `filePath` and `cells` array |
+| `pdf` | Base64-encoded PDF with `filePath`, `base64`, and `originalSize` |
+| `file_unchanged` | Deduplication stub — file content is identical to a prior read still in context |
+
+<Note>
+  Lines are returned with `N: ` prefixes (e.g. `1: import React from 'react'`) to make line-number references unambiguous.
+</Note>
+
+### Concurrency and staleness
+
+FileReadTool stores a modification-time snapshot in `readFileState` for every file it reads. FileEditTool and FileWriteTool check this snapshot before writing and refuse to proceed if the file has been modified since the last read.
+
+<Warning>
+  You must read a file before editing it. Attempting to call FileEditTool or FileWriteTool on a file that has not been read in the current session returns an error.
+</Warning>
+
+### Usage example
+
+```json
+{
+  "tool": "Read",
+  "input": {
+    "file_path": "/home/user/project/src/index.ts",
+    "offset": 1,
+    "limit": 50
+  }
+}
+```
+
+Reading a specific page range of a PDF:
+
+```json
+{
+  "tool": "Read",
+  "input": {
+    "file_path": "/home/user/docs/report.pdf",
+    "pages": "1-5"
+  }
+}
+```
+
+### Blocked paths
+
+For security, the tool refuses to read device files that produce infinite output or block on input: `/dev/zero`, `/dev/random`, `/dev/urandom`, `/dev/stdin`, `/dev/tty`, and their `/proc/self/fd/` aliases.
+
+---
+
+## FileEditTool
+
+Performs an exact in-place string replacement inside an existing file. The model supplies the literal text to find (`old_string`) and the literal text to write in its place (`new_string`).
+
+**Tool name:** `Edit`  
+**Read-only:** no  
+**Concurrency-safe:** no  
+**Destructive:** yes (modifies file in-place; a backup can be enabled via file history)
+
+### Parameters
+
+<ParamField path="file_path" type="string" required>
+  Absolute path to the file to modify.
+</ParamField>
+
+<ParamField path="old_string" type="string" required>
+  The exact text to search for and replace. Must match a unique substring of the file (use more context if the string appears more than once and `replace_all` is `false`). Pass an empty string to write to an empty or non-existent file.
+</ParamField>
+
+<ParamField path="new_string" type="string" required>
+  The text to replace `old_string` with. Must differ from `old_string`.
+</ParamField>
+
+<ParamField path="replace_all" type="boolean" default="false">
+  When `true`, all occurrences of `old_string` in the file are replaced. When `false` (default), the tool rejects the call if `old_string` appears more than once.
+</ParamField>
+
+### Return value
+
+On success the tool returns a `FileEditOutput` object:
+
+<ResponseField name="filePath" type="string">
+  Path to the file that was edited.
+</ResponseField>
+
+<ResponseField name="oldString" type="string">
+  The actual string that was replaced (may differ slightly from `old_string` due to quote-style normalization).
+</ResponseField>
+
+<ResponseField name="newString" type="string">
+  The replacement text.
+</ResponseField>
+
+<ResponseField name="structuredPatch" type="array">
+  Unified-diff hunks describing the change.
+</ResponseField>
+
+<ResponseField name="userModified" type="boolean">
+  `true` if the user manually edited the proposed change before approving it.
+</ResponseField>
+
+### Validation rules
+
+The tool performs several checks before writing:
+
+1. `old_string` and `new_string` must differ.
+2. The file must have been read in the current session (`FileReadTool` updates the cache).
+3. The file must not have been modified since the last read (stale-write guard).
+4. When `replace_all` is `false`, `old_string` must appear exactly once.
+5. `.ipynb` files must be edited with **NotebookEditTool** instead.
+
+### Usage example
+
+```json
+{
+  "tool": "Edit",
+  "input": {
+    "file_path": "/home/user/project/src/utils.ts",
+    "old_string": "function add(a, b) {\n  return a + b\n}",
+    "new_string": "function add(a: number, b: number): number {\n  return a + b\n}"
+  }
+}
+```
+
+<Tip>
+  Include several lines of surrounding context in `old_string` when the target string is short or likely to appear elsewhere in the file. This ensures the correct occurrence is replaced.
+</Tip>
+
+---
+
+## FileWriteTool
+
+Creates a new file or fully overwrites an existing file with the supplied content. Unlike FileEditTool, this is a whole-file operation — use it for new files or when a large portion of the file changes.
+
+**Tool name:** `Write`  
+**Read-only:** no  
+**Concurrency-safe:** no  
+**Destructive:** yes (existing content is replaced)
+
+### Parameters
+
+<ParamField path="file_path" type="string" required>
+  Absolute path to the file to write. Parent directories are created automatically.
+</ParamField>
+
+<ParamField path="content" type="string" required>
+  The full content to write to the file. The tool always uses LF (`\n`) line endings regardless of the platform or previous file content.
+</ParamField>
+
+### Return value
+
+<ResponseField name="type" type="string">
+  Either `"create"` (new file) or `"update"` (existing file overwritten).
+</ResponseField>
+
+<ResponseField name="filePath" type="string">
+  Path to the file that was written.
+</ResponseField>
+
+<ResponseField name="content" type="string">
+  The content that was written.
+</ResponseField>
+
+<ResponseField name="structuredPatch" type="array">
+  Diff hunks relative to the previous content (empty array for new files).
+</ResponseField>
+
+<ResponseField name="originalFile" type="string | null">
+  The previous file content before the write, or `null` for new files.
+</ResponseField>
+
+### Staleness guard
+
+Like FileEditTool, FileWriteTool refuses to overwrite a file that has changed on disk since it was last read. Read the file first if you need to overwrite an existing one.
+
+### Usage example
+
+```json
+{
+  "tool": "Write",
+  "input": {
+    "file_path": "/home/user/project/README.md",
+    "content": "# My Project\n\nA short description.\n"
+  }
+}
+```
+
+---
+
+## NotebookEditTool
+
+Edits cells inside a Jupyter notebook (`.ipynb`). Supports inserting new cells, replacing cell source, and deleting cells. FileEditTool will reject `.ipynb` files and redirect to this tool.
+
+**Tool name:** `NotebookEdit`  
+**Read-only:** no  
+**Concurrency-safe:** no  
+**Destructive:** yes (modifies notebook in-place)
+
+### Parameters
+
+<ParamField path="notebook_path" type="string" required>
+  Absolute path to the Jupyter notebook file.
+</ParamField>
+
+<ParamField path="cell_id" type="string">
+  The ID of the target cell. For `replace` and `delete` modes, identifies the cell to operate on. For `insert` mode, the new cell is inserted **after** this cell (omit to insert at the beginning).
+</ParamField>
+
+<ParamField path="new_source" type="string" required>
+  The source code or markdown text for the cell.
+</ParamField>
+
+<ParamField path="cell_type" type="string">
+  Cell type: `"code"` or `"markdown"`. Required when `edit_mode` is `"insert"`. Defaults to the existing cell's type for `replace`.
+</ParamField>
+
+<ParamField path="edit_mode" type="string" default="replace">
+  Operation to perform:
+  - `"replace"` — update an existing cell's source (default)
+  - `"insert"` — add a new cell after `cell_id`
+  - `"delete"` — remove the cell identified by `cell_id`
+</ParamField>
+
+### Usage example
+
+Inserting a new markdown cell at the top of a notebook:
+
+```json
+{
+  "tool": "NotebookEdit",
+  "input": {
+    "notebook_path": "/home/user/analysis/notebook.ipynb",
+    "new_source": "## Data Cleaning\n\nRemove nulls and normalize column types.",
+    "cell_type": "markdown",
+    "edit_mode": "insert"
+  }
+}
+```
+
+Replacing an existing code cell:
+
+```json
+{
+  "tool": "NotebookEdit",
+  "input": {
+    "notebook_path": "/home/user/analysis/notebook.ipynb",
+    "cell_id": "abc123",
+    "new_source": "df = pd.read_csv('data.csv')\ndf.dropna(inplace=True)",
+    "cell_type": "code",
+    "edit_mode": "replace"
+  }
+}
+```

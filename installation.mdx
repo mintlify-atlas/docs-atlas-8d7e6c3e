@@ -1,0 +1,166 @@
+---
+title: "Installation"
+description: "Install Claude Code via the pre-built CLI or build from source using esbuild."
+---
+
+There are three ways to get Claude Code running. Choose based on what you need.
+
+<Tabs>
+  <Tab title="Option A: Pre-built CLI (recommended)">
+    The npm package already contains a compiled `cli.js`. This is the fastest path and requires no build tooling beyond Node.js.
+
+    ## Prerequisites
+
+    ```bash
+    node --version   # >= 18
+    ```
+
+    ## Run directly
+
+    ```bash
+    cd /path/to/claude-code-source-code
+    node cli.js --version
+    # → 2.1.88 (Claude Code)
+    ```
+
+    ## Install globally
+
+    ```bash
+    npm install -g .
+    claude --version
+    # → 2.1.88 (Claude Code)
+    ```
+
+    <Tip>
+    For automation and scripting, prefer `node cli.js` directly. Global install is convenient for interactive use.
+    </Tip>
+  </Tab>
+
+  <Tab title="Option B: Build from source (esbuild)">
+    A best-effort source build using esbuild gets approximately 95% complete. Some internal modules are unavailable (see warning below).
+
+    ## Prerequisites
+
+    ```bash
+    node --version   # >= 18
+    npm --version    # >= 9
+    ```
+
+    ## Steps
+
+    ```bash
+    cd claude-code-source-code/
+
+    # 1. Install the build dependency
+    npm install --save-dev esbuild
+
+    # 2. Run the build script
+    node scripts/build.mjs
+
+    # 3. Run the output
+    node dist/cli.js --version
+    ```
+
+    <Warning>
+    The source build is **incomplete by design**. 108 modules referenced by `feature()`-gated branches are not included in the published npm package — they exist only in Anthropic's internal monorepo and were dead-code-eliminated at compile time. They cannot be recovered from `cli.js`, `sdk-tools.d.ts`, or any published artifact. The esbuild build creates stubs for these modules automatically, but some functionality will be absent at runtime.
+    </Warning>
+
+    ## What the build script does
+
+    | Phase | Action |
+    |-------|--------|
+    | **1. Copy** | `src/` → `build-src/` (original source is untouched) |
+    | **2. Transform** | `feature('X')` → `false` to enable dead code elimination |
+    | **2b. Transform** | `MACRO.VERSION` → `'2.1.88'` (compile-time version injection) |
+    | **2c. Transform** | `import from 'bun:bundle'` → stub import |
+    | **3. Entry** | Create a wrapper that injects `MACRO` globals |
+    | **4. Bundle** | esbuild with iterative stub creation for missing modules |
+
+    ## Known issues
+
+    The source uses **Bun compile-time intrinsics** that esbuild cannot fully replicate:
+
+    1. **`feature('FLAG')` from `bun:bundle`** — Bun resolves this at compile time to `true`/`false` and eliminates dead branches. The build script replaces these with `false`, but esbuild still attempts to resolve `require()` calls inside those branches.
+
+    2. **`MACRO.X`** — Bun's `--define` replaces these at compile time. The build script uses string replacement, which works for most cases but can miss edge cases in complex expressions.
+
+    3. **108 missing modules** — Feature-gated internal modules (daemon, bridge assistant, context collapse, etc.) that don't exist in the published source. Normally dead-code-eliminated by Bun, but esbuild can't eliminate them because the `require()` calls remain syntactically present.
+
+    4. **`bun:ffi`** — Used for native proxy support. Stubbed out in the build.
+
+    5. **`import type` from generated files** — Some generated type files are not in the published source.
+
+    ## Diagnosing remaining issues
+
+    ```bash
+    # Check what's still missing after a build attempt
+    npx esbuild build-src/entry.ts --bundle --platform=node \
+      --packages=external --external:'bun:*' \
+      --log-level=error --log-limit=0 --outfile=/dev/null 2>&1 | \
+      grep "Could not resolve" | sort -u
+    ```
+
+    For each unresolved module, create a stub file in `build-src/src/` that exports empty functions, then re-run `node scripts/build.mjs`.
+  </Tab>
+
+  <Tab title="Option C: Build with Bun (requires internal access)">
+    A full rebuild requires Bun for its compile-time intrinsics (`feature()`, `MACRO`, `bun:bundle`). The internal build configuration is not included in the published package — you would need access to Anthropic's internal monorepo.
+
+    This option is documented here for completeness and for Anthropic engineers.
+
+    ## Install Bun
+
+    ```bash
+    curl -fsSL https://bun.sh/install | bash
+    ```
+
+    ## The real build command (reference only)
+
+    ```bash
+    # bun build src/entrypoints/cli.tsx \
+    #   --define:feature='(flag) => flag === "SOME_FLAG"' \
+    #   --define:MACRO.VERSION='"2.1.88"' \
+    #   --target=bun \
+    #   --outfile=dist/cli.js
+    ```
+
+    <Warning>
+    The internal build configuration, feature flag definitions, and the 108 internal modules are not included in this repository. Running the command above without Anthropic's internal monorepo will fail.
+    </Warning>
+
+    ## Why Bun is required
+
+    Bun's `feature()` is a **compile-time intrinsic**:
+
+    - Returns `true` in Anthropic's internal build → code is kept in the bundle
+    - Returns `false` in the published build → code is dead-code-eliminated
+    - The 108 missing modules simply do not exist anywhere in the published artifact
+
+    ```
+    Anthropic Internal Monorepo              Published npm Package
+    ──────────────────────────               ─────────────────────
+    feature('DAEMON') → true    ──build──→   feature('DAEMON') → false
+    ↓                                         ↓
+    daemon/main.js  ← INCLUDED    ──bundle─→  daemon/main.js  ← DELETED (DCE)
+    tools/REPLTool  ← INCLUDED    ──bundle─→  tools/REPLTool  ← DELETED (DCE)
+    ```
+  </Tab>
+</Tabs>
+
+## Project structure
+
+```
+claude-code-source-code/
+├── src/                  # Original TypeScript source (1,884 files, 512K LOC)
+├── stubs/                # Build stubs for Bun compile-time intrinsics
+│   ├── bun-bundle.ts     #   feature() stub → always returns false
+│   ├── macros.ts         #   MACRO version constants
+│   └── global.d.ts       #   Global type declarations
+├── scripts/
+│   └── build.mjs         # Build script (esbuild-based)
+├── node_modules/         # 192 npm dependencies
+├── vendor/               # Native module source stubs
+├── build-src/            # Created by build script (transformed copy)
+├── dist/                 # Build output (created by build script)
+└── cli.js                # Pre-built CLI bundle (~12 MB)
+```

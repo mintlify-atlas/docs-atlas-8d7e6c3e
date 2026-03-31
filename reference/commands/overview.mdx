@@ -1,0 +1,131 @@
+---
+title: "Slash Commands Overview"
+description: "A reference for all slash commands available in the Claude Code REPL."
+---
+
+Slash commands are short directives you type directly in the Claude Code prompt, prefixed with `/`. They control session state, configuration, integrations, and tooling — without consuming any AI tokens. Claude never sees them; they are intercepted and handled locally before the message is sent to the model.
+
+```bash
+# Type a slash command at any Claude Code prompt
+> /clear
+> /compact focus on the authentication logic
+> /model claude-opus-4-5
+```
+
+<Note>
+  Commands are available in the interactive REPL (`claude`). Most are not available in non-interactive / pipe mode unless the entry in the table below notes `supportsNonInteractive: true`.
+</Note>
+
+---
+
+## All commands by category
+
+<AccordionGroup>
+  <Accordion title="Session & History">
+    | Command | Aliases | Description |
+    |---------|---------|-------------|
+    | `/clear` | `reset`, `new` | Clear conversation history and free up context |
+    | `/compact [instructions]` | — | Summarise conversation history and continue with a compact context |
+    | `/resume [id or search]` | `continue` | List and resume a previous conversation session |
+    | `/context` | — | Visualise context window usage as a coloured grid |
+    | `/cost` | — | Show total API cost and duration for the current session |
+    | `/usage` | — | Show plan usage limits (claude.ai subscribers) |
+    | `/export` | — | Export current conversation to a file |
+    | `/rewind` | — | Rewind to an earlier point in the conversation |
+    | `/exit` | `quit` | Exit the REPL |
+  </Accordion>
+
+  <Accordion title="Configuration">
+    | Command | Aliases | Description |
+    |---------|---------|-------------|
+    | `/config` | `settings` | Open the interactive configuration panel |
+    | `/model [model]` | — | Switch the active AI model |
+    | `/memory` | — | Edit CLAUDE.md project memory files |
+    | `/plan [open\|description]` | — | Enable plan mode or view the current session plan |
+    | `/theme` | — | Change the UI colour theme |
+    | `/vim` | — | Toggle between Vim and Normal editing modes |
+    | `/effort [level]` | — | Set reasoning effort level (`low`, `medium`, `high`, `max`, `auto`) |
+    | `/status` | — | Show version, model, account, API connectivity, and tool status |
+    | `/doctor` | — | Diagnose and verify your Claude Code installation |
+    | `/permissions` | `allowed-tools` | Manage allow/deny tool permission rules |
+    | `/hooks` | — | View hook configurations for tool events |
+    | `/keybindings` | — | View and manage keyboard shortcuts |
+    | `/sandbox` | — | Toggle or configure sandbox restrictions |
+    | `/init` | — | Create or improve a `CLAUDE.md` for the current repository |
+  </Accordion>
+
+  <Accordion title="MCP & Integrations">
+    | Command | Aliases | Description |
+    |---------|---------|-------------|
+    | `/mcp [enable\|disable [server]]` | — | Manage MCP server connections |
+    | `/login` | — | Sign in to your Anthropic account |
+    | `/logout` | — | Sign out from your Anthropic account |
+    | `/install` | — | Install or reinstall the Claude Code native binary |
+    | `/install-github-app` | — | Set up Claude GitHub Actions for a repository |
+    | `/install-slack-app` | — | Install the Claude Slack app |
+    | `/desktop` | `app` | Continue the current session in Claude Desktop |
+    | `/ide` | — | Connect to an IDE integration |
+    | `/feedback [report]` | `bug` | Submit feedback or report a bug |
+    | `/upgrade` | — | Upgrade to Max plan for higher rate limits (claude.ai) |
+  </Accordion>
+
+  <Accordion title="Agents & Workflow">
+    | Command | Aliases | Description |
+    |---------|---------|-------------|
+    | `/agents` | — | Manage agent configurations |
+    | `/review [PR number]` | — | Review an open pull request |
+    | `/tasks` | — | View and manage background tasks |
+    | `/add-dir [path]` | — | Add an additional working directory |
+    | `/branch` | — | Manage git branches |
+    | `/diff` | — | Show current git diff |
+    | `/skills` | — | View and manage loaded skills |
+    | `/plugin` | — | Manage Claude Code plugins |
+  </Accordion>
+
+  <Accordion title="Information & Help">
+    | Command | Aliases | Description |
+    |---------|---------|-------------|
+    | `/help` | — | Show help and available commands |
+    | `/version` | — | Print the current Claude Code version |
+    | `/status` | — | Show full runtime status summary |
+    | `/doctor` | — | Run installation diagnostics |
+    | `/release-notes` | — | View release notes for the current version |
+    | `/insights` | — | Generate a usage analytics report for your sessions |
+    | `/stats` | — | Show session statistics |
+  </Accordion>
+</AccordionGroup>
+
+---
+
+## How slash commands work
+
+<Steps>
+  <Step title="Input interception">
+    When you press Enter after typing `/command`, Claude Code intercepts the input before it reaches the AI model. The command name is matched against the built-in command registry.
+  </Step>
+  <Step title="Argument parsing">
+    Everything after the command name is passed as a raw argument string to the command handler. Commands that accept arguments document them with an `argumentHint`, visible in autocomplete.
+  </Step>
+  <Step title="Local execution">
+    The command runs locally — modifying session state, opening a UI panel, or performing a system operation. No API call is made unless the command itself triggers one (e.g. `/compact`).
+  </Step>
+  <Step title="Return to prompt">
+    After the command completes, the REPL returns to the input prompt, ready for the next message or command.
+  </Step>
+</Steps>
+
+## Custom slash commands (skills)
+
+In addition to built-in commands, Claude Code loads **skills** from:
+
+- `.claude/commands/` in the current project directory
+- `~/.claude/commands/` in your home directory
+
+Skills are Markdown or MDX files whose filename becomes the command name. Place them in `.claude/commands/` to make them available as slash commands.
+
+```
+.claude/
+└── commands/
+    ├── deploy.md          # available as /deploy
+    └── generate-tests.md  # available as /generate-tests
+```

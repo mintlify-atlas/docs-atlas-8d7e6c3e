@@ -1,0 +1,247 @@
+---
+title: "Memory System"
+description: "Using CLAUDE.md files and auto-memory for project-level context"
+---
+
+Claude Code has two complementary memory mechanisms: **CLAUDE.md files** for static, human-authored context that is injected into every session, and the **auto-memory system** for persistent, Claude-authored notes that accumulate across sessions.
+
+## CLAUDE.md files
+
+A `CLAUDE.md` file is a Markdown file whose content is injected verbatim into Claude's system prompt at the start of each session. Use it to document project conventions, preferred commands, architecture decisions, and anything Claude should always know about your project.
+
+### File locations
+
+Claude Code walks up the directory tree from the current working directory, loading every `CLAUDE.md` it finds:
+
+| Path | Scope |
+|------|-------|
+| `.claude/CLAUDE.md` | Project-specific (inside `.claude/` directory) |
+| `CLAUDE.md` | Project root |
+| `../.claude/CLAUDE.md` | Parent directory (continues up the tree) |
+| `~/.claude/CLAUDE.md` | Global user memory |
+
+Files higher in the tree are loaded first. Project-level files take precedence in the final assembled prompt.
+
+<Note>
+CLAUDE.md files are loaded lazily via `loadMemoryPrompt()` — not at startup — so changes take effect on the next session without restarting Claude Code.
+</Note>
+
+### Excluding specific files
+
+Use `claudeMdExcludes` in `settings.json` to skip loading specific CLAUDE.md files. Patterns are matched against absolute paths using picomatch:
+
+```json
+{
+  "claudeMdExcludes": [
+    "/home/user/monorepo/CLAUDE.md",
+    "**/generated/CLAUDE.md",
+    "**/some-vendor-dir/.claude/rules/**"
+  ]
+}
+```
+
+Only User, Project, and Local memory types can be excluded. Managed/policy files cannot be excluded.
+
+## Auto-memory system
+
+The auto-memory system gives Claude a persistent, file-based memory directory where it can store structured notes across conversations. Unlike CLAUDE.md (which you author), auto-memory is maintained by Claude itself.
+
+### Storage location
+
+By default, auto-memory lives at:
+
+```
+~/.claude/projects/<sanitized-git-root>/memory/
+```
+
+The directory is keyed on the canonical git root so all worktrees of the same repository share one memory store.
+
+**Override options** (in priority order):
+
+1. `CLAUDE_COWORK_MEMORY_PATH_OVERRIDE` environment variable — full-path override
+2. `autoMemoryDirectory` in settings (user/local/policy only; not project settings for security)
+3. Default derived from git root
+
+### MEMORY.md entrypoint
+
+The memory directory uses `MEMORY.md` as an index file. It must be kept concise — only the first 200 lines (or 25 KB) are loaded into context. Individual memory entries live in separate topic files and are linked from `MEMORY.md`.
+
+```
+~/.claude/projects/my-repo/memory/
+├── MEMORY.md              ← Index, always loaded (200-line cap)
+├── user_role.md           ← Individual memory file
+├── feedback_testing.md    ← Individual memory file
+└── project_context.md     ← Individual memory file
+```
+
+### Memory types
+
+Claude organizes memories into four types:
+
+| Type | Description |
+|------|-------------|
+| `user` | Information about the user's role, goals, and preferences |
+| `feedback` | Guidance about how to approach work — corrections and confirmations |
+| `project` | Ongoing work context not derivable from the code or git history |
+| `reference` | Pointers to external systems (Linear projects, Grafana dashboards, Slack channels) |
+
+Each memory file uses YAML frontmatter:
+
+```markdown
+---
+name: User prefers terse responses
+description: User wants no trailing summaries — they can read the diff
+type: feedback
+---
+
+Do not add a summary of what you just did at the end of responses.
+
+**Why:** User said "I can read the diff" — summaries are redundant noise.
+**How to apply:** Skip the closing summary paragraph entirely.
+```
+
+### What NOT to save in memory
+
+The auto-memory system is for information that is **not derivable from the current project state**. Do not save:
+
+- Code patterns, architecture, or project structure — Claude can read the files
+- Git history or recent changes — `git log` is authoritative
+- Debugging solutions — the fix is in the code and commit messages
+- Anything already in CLAUDE.md files
+- Ephemeral task state or in-progress work
+
+### Enabling and disabling auto-memory
+
+Auto-memory is **enabled by default**. To disable it:
+
+<Tabs>
+  <Tab title="settings.json">
+    ```json
+    {
+      "autoMemoryEnabled": false
+    }
+    ```
+  </Tab>
+  <Tab title="Environment variable">
+    ```bash
+    CLAUDE_CODE_DISABLE_AUTO_MEMORY=1 claude
+    ```
+  </Tab>
+</Tabs>
+
+<Note>
+`CLAUDE_CODE_DISABLE_AUTO_MEMORY=1` wins over `autoMemoryEnabled: false` in settings. Set it to `0` or `false` to force-enable auto-memory even when the settings file disables it.
+</Note>
+
+Auto-memory is also automatically disabled in:
+- Bare/simple mode (`--bare` or `CLAUDE_CODE_SIMPLE=1`)
+- Remote sessions without `CLAUDE_CODE_REMOTE_MEMORY_DIR` set
+
+## Creating a CLAUDE.md
+
+<Steps>
+  <Step title="Create the file">
+    Create a `CLAUDE.md` at your project root or inside `.claude/`:
+
+    ```bash
+    touch CLAUDE.md
+    # or
+    mkdir -p .claude && touch .claude/CLAUDE.md
+    ```
+  </Step>
+
+  <Step title="Document project conventions">
+    Add sections that Claude should always know:
+
+    ```markdown
+    # Project: my-service
+
+    ## Build and test commands
+    - `bun run build` — compile TypeScript
+    - `bun test` — run tests
+    - `bun run lint` — run ESLint
+
+    ## Architecture
+    - Entry point: `src/index.ts`
+    - Config loaded from `src/config/` at startup
+    - Database access only through `src/db/` — never raw SQL outside that directory
+
+    ## Conventions
+    - Use `Result<T, E>` error types, not exceptions
+    - Tests live next to source files as `*.test.ts`
+    - Commits must pass `bun run lint` before merging
+    ```
+  </Step>
+
+  <Step title="Open it in the /memory editor">
+    Run `/memory` in Claude Code to open the interactive memory file selector. From there you can open and edit any CLAUDE.md file using your `$EDITOR`.
+  </Step>
+
+  <Step title="Verify it is loaded">
+    Start a new Claude Code session and ask: *"What do you know about this project?"* — Claude should reflect the content of your CLAUDE.md.
+  </Step>
+</Steps>
+
+## /memory slash command
+
+The `/memory` command opens a UI for selecting and editing memory files. It shows all discoverable CLAUDE.md files for the current project and lets you open them in your configured editor (`$VISUAL` or `$EDITOR`).
+
+```
+/memory
+```
+
+After selecting a file, Claude Code reports which editor it used and how to change it:
+
+```
+Opened memory file at .claude/CLAUDE.md
+
+> Using $EDITOR="vim". To change editor, set $EDITOR or $VISUAL environment variable.
+```
+
+## Best practices for CLAUDE.md
+
+<Tip>
+Keep each CLAUDE.md focused on the directory it lives in. Put global user preferences in `~/.claude/CLAUDE.md` and project-specific conventions in `.claude/CLAUDE.md` at the repo root.
+</Tip>
+
+<Tip>
+Document the "why" behind non-obvious conventions. Knowing that `bun` is required because of a lockfile constraint is more useful than just saying "use bun".
+</Tip>
+
+<Tip>
+Keep the file under a few hundred lines. Very large CLAUDE.md files consume context budget that could otherwise go to code. Move verbose documentation into referenced files and summarize in CLAUDE.md.
+</Tip>
+
+<Tip>
+Avoid duplicating information available in code. CLAUDE.md is for conventions, preferences, and context that Claude cannot infer by reading the source.
+</Tip>
+
+## Example CLAUDE.md
+
+```markdown
+# my-api
+
+## Setup
+- Runtime: Bun (not Node) — `bun install`, `bun run dev`
+- Database: PostgreSQL via `src/db/client.ts` — never import `pg` directly
+- Config: `src/config/index.ts` reads from env; see `.env.example`
+
+## Testing
+- `bun test` runs all tests
+- Integration tests in `tests/integration/` require a local Postgres instance
+- Do NOT mock the database — we have had incidents with mock/prod divergence
+
+## Code conventions
+- Errors: use `Result<T, E>` from `src/utils/result.ts`, not thrown exceptions
+- Logging: `src/utils/logger.ts` — never `console.log` in production code
+- File naming: kebab-case for files, PascalCase for classes and React components
+
+## Deployment
+- Staging: auto-deployed from `main` branch
+- Production: manual deploy via `bun run deploy:prod` after approval
+- Monitor: Grafana at grafana.internal/d/api-latency (oncall dashboard)
+
+## Known quirks
+- `src/jobs/` run in a separate worker process — changes require a worker restart
+- The `parseConfig()` function is called at import time — avoid side effects there
+```

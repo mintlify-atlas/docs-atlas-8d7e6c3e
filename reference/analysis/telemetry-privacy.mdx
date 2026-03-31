@@ -1,0 +1,166 @@
+---
+title: "Telemetry & Privacy"
+description: "Analysis of Claude Code's telemetry and data collection practices, based on v2.1.88 decompiled source code."
+---
+
+<Warning>
+  This page contains research findings derived from decompiled source code of `@anthropic-ai/claude-code` v2.1.88. It is intended for educational and research purposes only. All source code is the intellectual property of Anthropic.
+</Warning>
+
+## Overview
+
+Claude Code implements a two-tier analytics pipeline that collects extensive environment and usage metadata on every session. While there is no evidence of keylogging or source code exfiltration, the breadth of collection and the inability to fully opt out of first-party logging raises legitimate privacy considerations.
+
+## Data Pipeline Architecture
+
+<CardGroup cols={2}>
+  <Card title="First-Party Logging (1P)" icon="building">
+    Events sent directly to Anthropic's infrastructure via OpenTelemetry.
+
+    - **Endpoint**: `https://api.anthropic.com/api/event_logging/batch`
+    - **Protocol**: OpenTelemetry with Protocol Buffers
+    - **Batch size**: Up to 200 events, flushed every 10 seconds
+    - **Retry**: Quadratic backoff, up to 8 attempts
+    - **Persistence**: Failed events saved to `~/.claude/telemetry/` for retry
+
+    Source: `src/services/analytics/firstPartyEventLoggingExporter.ts`
+  </Card>
+  <Card title="Third-Party Logging (Datadog)" icon="chart-bar">
+    A subset of events forwarded to Datadog for operational monitoring.
+
+    - **Endpoint**: `https://http-intake.logs.us5.datadoghq.com/api/v2/logs`
+    - **Scope**: Limited to 64 pre-approved event types
+    - **Token**: `pubbbf48e6d78dae54bceaa4acf463299bf` (hardcoded in bundle)
+
+    Source: `src/services/analytics/datadog.ts`
+  </Card>
+</CardGroup>
+
+## What Is Collected
+
+Every analytics event carries a common payload. The following fields are attached automatically.
+
+<AccordionGroup>
+  <Accordion title="Environment Fingerprint" icon="fingerprint">
+    Attached to every event. Source: `src/services/analytics/metadata.ts:417-452`
+
+    ```
+    platform, platformRaw, arch, nodeVersion
+    terminal type
+    installed package managers and runtimes
+    CI/CD detection, GitHub Actions metadata
+    WSL version, Linux distro, kernel version
+    VCS (version control system) type
+    Claude Code version and build time
+    deployment environment
+    ```
+  </Accordion>
+  <Accordion title="Process Metrics" icon="microchip">
+    Memory and CPU data sampled at event time. Source: `metadata.ts:457-467`
+
+    ```
+    uptime, rss, heapTotal, heapUsed
+    CPU usage and percentage
+    memory arrays and external allocations
+    ```
+  </Accordion>
+  <Accordion title="User & Session Tracking" icon="user">
+    Identity and subscription data included on every event. Source: `metadata.ts:472-496`
+
+    ```
+    model in use
+    session ID, user ID, device ID
+    account UUID, organization UUID
+    subscription tier (max, pro, enterprise, team)
+    repository remote URL hash (SHA256, first 16 chars)
+    agent type, team name, parent session ID
+    ```
+  </Accordion>
+  <Accordion title="Tool Input Logging" icon="wrench">
+    Tool inputs are included in events but truncated by default. Source: `metadata.ts:236-241`
+
+    | Field type | Default truncation |
+    |---|---|
+    | Strings | Truncated at 512 chars, displayed as 128 + `…` |
+    | JSON | Limited to 4,096 chars |
+    | Arrays | Max 20 items |
+    | Nested objects | Max 2 levels deep |
+
+    <Warning>
+      When `OTEL_LOG_TOOL_DETAILS=1` is set, **full, untruncated tool inputs are logged**. This means complete file paths, bash command arguments, and other tool parameters are sent to Anthropic's servers. Source: `metadata.ts:86-88`
+    </Warning>
+  </Accordion>
+  <Accordion title="File Extension Tracking" icon="file">
+    Bash commands involving `rm`, `mv`, `cp`, `touch`, `mkdir`, `chmod`, `chown`, `cat`, `head`, `tail`, `sort`, `stat`, `diff`, `wc`, `grep`, `rg`, `sed` have the file extensions of their arguments extracted and included in the event payload.
+
+    Source: `metadata.ts:340-412`
+  </Accordion>
+</AccordionGroup>
+
+## The Opt-Out Problem
+
+<Warning>
+  The first-party logging pipeline **cannot be disabled** by direct Anthropic API users. There is no user-facing setting to turn it off.
+</Warning>
+
+The controlling function in source:
+
+```typescript
+// src/services/analytics/firstPartyEventLogger.ts:141-144
+export function is1PEventLoggingEnabled(): boolean {
+  return !isAnalyticsDisabled()
+}
+```
+
+`isAnalyticsDisabled()` only returns `true` in three situations:
+
+1. Test environments (automated CI)
+2. Third-party cloud providers (AWS Bedrock, Google Vertex AI)
+3. A global telemetry opt-out — which is **not exposed anywhere in the settings UI**
+
+For all standard direct API and OAuth users, first-party logging is always enabled.
+
+## GrowthBook A/B Testing
+
+<Info>
+  Users are silently assigned to experiment groups via GrowthBook without explicit notification. The assignment process sends user-identifying attributes to GrowthBook's evaluation engine.
+</Info>
+
+Attributes sent for experiment assignment (source: `src/services/analytics/growthbook.ts`):
+
+```
+id, sessionId, deviceID
+platform, organizationUUID, subscriptionType
+```
+
+## Environment Variables
+
+The following environment variables affect telemetry behavior:
+
+| Variable | Effect |
+|---|---|
+| `OTEL_LOG_TOOL_DETAILS=1` | Enables full, untruncated tool input logging |
+| `ANTHROPIC_API_KEY` (Bedrock/Vertex context) | Routes through third-party provider; disables 1P logging |
+
+## Key Findings Summary
+
+<CardGroup cols={2}>
+  <Card title="Volume" icon="chart-line">
+    Hundreds of events are collected per session, covering nearly every user interaction.
+  </Card>
+  <Card title="No Opt-Out" icon="ban">
+    First-party logging cannot be disabled by direct API users. The opt-out path exists in code but is not exposed.
+  </Card>
+  <Card title="Persistence" icon="hard-drive">
+    Failed events are saved to `~/.claude/telemetry/` and retried with quadratic backoff across up to 8 attempts.
+  </Card>
+  <Card title="Third-Party Sharing" icon="share">
+    A subset of events is forwarded to Datadog using a hardcoded public ingest token.
+  </Card>
+  <Card title="Repository Fingerprinting" icon="code-branch">
+    Repository remote URLs are SHA256-hashed (first 16 chars) and included on every event for server-side correlation.
+  </Card>
+  <Card title="Tool Detail Backdoor" icon="eye">
+    `OTEL_LOG_TOOL_DETAILS=1` enables capture of full tool inputs — a non-default mode with significant privacy implications if inadvertently set.
+  </Card>
+</CardGroup>

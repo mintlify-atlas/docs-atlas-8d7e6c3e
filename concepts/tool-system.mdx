@@ -1,0 +1,183 @@
+---
+title: "Tool System"
+description: "How Claude Code's tool interface works — lifecycle, capabilities, rendering, and the complete built-in tool inventory."
+---
+
+Every capability Claude Code can exercise — reading a file, running a shell command, fetching a URL, spawning a sub-agent — is a tool. Tools are the atomic unit of action in the agent loop. When the Claude API returns a `tool_use` block, the loop looks up the matching tool by name, validates the input, checks permissions, and calls it.
+
+## The Tool interface
+
+Every tool is a TypeScript object that satisfies the `Tool<Input, Output, Progress>` type defined in `src/Tool.ts`. The interface is divided into four groups of methods.
+
+### Lifecycle methods
+
+These methods run in sequence for every tool invocation.
+
+| Method | Signature | Description |
+|--------|-----------|-------------|
+| `validateInput()` | `(input, context) => Promise<ValidationResult>` | Reject malformed or out-of-bounds inputs before any permission check. Returns `{ result: true }` or `{ result: false, message, errorCode }`. Optional — omit to skip. |
+| `checkPermissions()` | `(input, context) => Promise<PermissionResult>` | Tool-specific authorization (e.g., path sandboxing for file tools). Called after the general permission system approves the call. |
+| `call()` | `(args, context, canUseTool, parentMessage, onProgress?) => Promise<ToolResult<Output>>` | Execute the tool and return the result. The `onProgress` callback streams incremental updates to the UI. |
+
+### Capability flags
+
+These methods let the executor and permission system know how to handle a tool safely.
+
+| Method | Default | Description |
+|--------|---------|-------------|
+| `isEnabled()` | `true` | Feature gate — return `false` to hide the tool entirely from the model. |
+| `isConcurrencySafe(input)` | `false` | When `true`, this tool can run in parallel with other concurrency-safe tools. Defaults to `false` (assume writes). |
+| `isReadOnly(input)` | `false` | When `true`, the tool has no side effects. Informs the permission dialog. |
+| `isDestructive(input)` | `false` | When `true`, the operation is irreversible (delete, overwrite, send). Shown prominently in the permission UI. |
+| `interruptBehavior()` | `'block'` | What happens when the user submits a new message while this tool runs. `'cancel'` stops it immediately; `'block'` lets it finish while the new message waits. |
+
+### Rendering methods
+
+Tools render their own UI in the terminal (React/Ink). The loop never dictates how a tool looks.
+
+| Method | When it runs |
+|--------|-------------|
+| `renderToolUseMessage(input, options)` | Immediately when the tool_use block starts streaming — input may be partial. |
+| `renderToolUseProgressMessage(progressMessages, options)` | While the tool is executing, to show spinners and live output. |
+| `renderToolResultMessage(content, progressMessages, options)` | After the tool completes, to display the final result. |
+| `renderGroupedToolUse(toolUses, options)` | When multiple instances of the same tool ran in parallel — renders them as a group instead of individually. |
+| `renderToolUseRejectedMessage(input, options)` | When the user denied the tool. Optional — falls back to `<FallbackToolUseRejectedMessage />`. |
+| `renderToolUseErrorMessage(result, options)` | When the tool threw an error. Optional — falls back to `<FallbackToolUseErrorMessage />`. |
+
+### AI-facing methods
+
+These methods shape how the model sees the tool.
+
+| Method | Description |
+|--------|-------------|
+| `prompt(options)` | Returns the tool's description string included in the system prompt. Can be dynamic based on current context. |
+| `description(input, options)` | One-line summary shown in permission dialogs and compact views. |
+| `mapToolResultToToolResultBlockParam(content, toolUseID)` | Serialize the tool output into the `ToolResultBlockParam` format the API expects. |
+| `toAutoClassifierInput(input)` | Returns a compact text representation for the auto-mode security classifier. Security-relevant tools must override this; return `''` to skip. |
+| `userFacingName(input)` | Short display name shown in the terminal UI. Defaults to `name`. |
+
+## buildTool() factory
+
+All tools are created through the `buildTool()` factory function in `src/Tool.ts`. It merges safe defaults for the commonly-stubbed methods so that callers never need `?.() ?? default`.
+
+```ts
+// src/Tool.ts
+export function buildTool<D extends AnyToolDef>(def: D): BuiltTool<D> {
+  return {
+    ...TOOL_DEFAULTS,
+    userFacingName: () => def.name,
+    ...def,
+  } as BuiltTool<D>
+}
+```
+
+The defaults applied by `buildTool()` are all **fail-closed** where it matters:
+
+```ts
+const TOOL_DEFAULTS = {
+  isEnabled: () => true,
+  isConcurrencySafe: (_input?) => false,   // assume not safe
+  isReadOnly: (_input?) => false,           // assume writes
+  isDestructive: (_input?) => false,
+  checkPermissions: (input, _ctx?) =>
+    Promise.resolve({ behavior: 'allow', updatedInput: input }),
+  toAutoClassifierInput: (_input?) => '',   // skip classifier by default
+  userFacingName: (_input?) => '',
+}
+```
+
+<Info>
+Every tool in the codebase goes through `buildTool()`. The factory also ensures that `userFacingName` always returns the tool's `name` even when the tool definition omits it.
+</Info>
+
+## Complete tool inventory
+
+<CardGroup cols={2}>
+  <Card title="File operations" icon="file">
+    Tools that read, write, and edit files on the local filesystem.
+
+    | Tool | Description |
+    |------|-------------|
+    | `FileReadTool` | Read file contents. Supports PDF, image, and text. Result size is unbounded (never persisted to disk — the tool self-bounds). |
+    | `FileEditTool` | String-replace editing. Applies a targeted diff rather than rewriting the full file. |
+    | `FileWriteTool` | Full file creation or overwrite. |
+    | `NotebookEditTool` | Edit Jupyter notebook cells (`.ipynb`). |
+  </Card>
+  <Card title="Search & discovery" icon="magnifying-glass">
+    Tools for finding files and content across the codebase.
+
+    | Tool | Description |
+    |------|-------------|
+    | `GlobTool` | File pattern matching (`**/*.ts`). Returns matches sorted by modification time. |
+    | `GrepTool` | Content search using ripgrep. Supports full regex. |
+    | `ToolSearchTool` | Keyword search across the tool registry itself. Used when deferred tools are enabled. |
+  </Card>
+  <Card title="Execution" icon="terminal">
+    Tools that run code or system commands.
+
+    | Tool | Description |
+    |------|-------------|
+    | `BashTool` | Shell command execution. Most-used tool in the system. |
+    | `PowerShellTool` | PowerShell command execution (Windows). |
+  </Card>
+  <Card title="Web & network" icon="globe">
+    Tools that access the internet.
+
+    | Tool | Description |
+    |------|-------------|
+    | `WebFetchTool` | HTTP fetch, converts response to Markdown by default. |
+    | `WebSearchTool` | Web search, returns structured results. |
+  </Card>
+  <Card title="Agent & task management" icon="network-wired">
+    Tools for spawning and coordinating agents and tasks.
+
+    | Tool | Description |
+    |------|-------------|
+    | `AgentTool` | Spawn a sub-agent with a fresh `messages[]`. Supports `default`, `fork`, `worktree`, and `remote` modes. |
+    | `SendMessageTool` | Send a message to a named teammate agent. |
+    | `TeamCreateTool` / `TeamDeleteTool` | Create and delete persistent teammate agents. |
+    | `TaskCreateTool` / `TaskUpdateTool` / `TaskGetTool` / `TaskListTool` / `TaskStopTool` / `TaskOutputTool` | File-based task graph with status tracking. |
+  </Card>
+  <Card title="Planning & workflow" icon="list-check">
+    Tools for structured planning and worktree management.
+
+    | Tool | Description |
+    |------|-------------|
+    | `EnterPlanModeTool` / `ExitPlanModeTool` | Switch to/from read-only planning mode. |
+    | `EnterWorktreeTool` / `ExitWorktreeTool` | Bind sub-agent to an isolated git worktree. |
+    | `TodoWriteTool` | Manage a persistent todo list for the current session. |
+  </Card>
+  <Card title="MCP protocol" icon="plug">
+    Tools for interacting with Model Context Protocol servers.
+
+    | Tool | Description |
+    |------|-------------|
+    | `MCPTool` | Wrapper around any tool exposed by a connected MCP server. Named `mcp__<server>__<tool>`. |
+    | `ListMcpResourcesTool` | List resources available from a connected MCP server. |
+    | `ReadMcpResourceTool` | Read a specific resource from a connected MCP server. |
+  </Card>
+  <Card title="System & interaction" icon="gear">
+    Tools for user interaction, configuration, and system management.
+
+    | Tool | Description |
+    |------|-------------|
+    | `AskUserQuestionTool` | Request input from the user mid-task. |
+    | `BriefTool` | Display a brief message to the user without requesting input. |
+    | `ConfigTool` | Read and write Claude Code settings. |
+    | `SkillTool` | Load and invoke a skill from the `memdir/` system. |
+    | `LSPTool` | Language server protocol queries (go-to-definition, diagnostics). |
+    | `ScheduleCronTool` | Register a cron-style scheduled task. |
+  </Card>
+</CardGroup>
+
+## Tool result size limits
+
+Every tool sets a `maxResultSizeChars` property. When a result exceeds this limit, the output is saved to a temporary file and Claude receives a preview with the file path instead of the full content. This prevents single large tool results from consuming the entire context window.
+
+`FileReadTool` sets `maxResultSizeChars` to `Infinity` — it self-bounds through its own read limits and persisting would create a circular `Read → file → Read` loop.
+
+## Deferred tools
+
+When the `shouldDefer` flag is `true` on a tool, it is sent to the model with `defer_loading: true` and its full schema is omitted from the initial system prompt. The model must call `ToolSearchTool` first to locate and load the tool's schema. This reduces prompt size when many tools are registered.
+
+Set `alwaysLoad: true` on a tool to force its schema into the initial prompt regardless of deferral settings. For MCP tools, this is controlled via `_meta['anthropic/alwaysLoad']`.

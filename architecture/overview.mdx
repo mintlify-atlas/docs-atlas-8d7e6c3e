@@ -1,0 +1,167 @@
+---
+title: "Architecture Overview"
+description: "High-level architecture of Claude Code v2.1.88 — entry layer, query engine, tool system, and key design patterns."
+---
+
+Claude Code v2.1.88 is a production-grade AI coding agent built on a layered architecture. The core agent loop is simple — send messages to the Claude API, execute tools, loop back — but a multi-layer harness wraps it with permissions, streaming, concurrency, compaction, sub-agents, persistence, and MCP.
+
+## Layer Diagram
+
+```
+┌─────────────────────────────────────────────────────────────────────┐
+│                         ENTRY LAYER                                 │
+│  cli.tsx ──> main.tsx ──> REPL.tsx (interactive)                   │
+│                     └──> QueryEngine.ts (headless/SDK)              │
+└──────────────────────────────┬──────────────────────────────────────┘
+                               │
+                               ▼
+┌─────────────────────────────────────────────────────────────────────┐
+│                       QUERY ENGINE                                  │
+│  submitMessage(prompt) ──> AsyncGenerator<SDKMessage>               │
+│    ├── fetchSystemPromptParts()    ──> assemble system prompt       │
+│    ├── processUserInput()          ──> handle /commands             │
+│    ├── query()                     ──> main agent loop              │
+│    │     ├── StreamingToolExecutor ──> parallel tool execution      │
+│    │     ├── autoCompact()         ──> context compression          │
+│    │     └── runTools()            ──> tool orchestration           │
+│    └── yield SDKMessage            ──> stream to consumer           │
+└──────────────────────────────┬──────────────────────────────────────┘
+                               │
+              ┌────────────────┼────────────────┐
+              ▼                ▼                 ▼
+┌──────────────────┐ ┌─────────────────┐ ┌──────────────────┐
+│   TOOL SYSTEM    │ │  SERVICE LAYER  │ │   STATE LAYER    │
+│                  │ │                 │ │                  │
+│ Tool Interface   │ │ api/claude.ts   │ │ AppState Store   │
+│  ├─ call()       │ │  API client     │ │  ├─ permissions  │
+│  ├─ validate()   │ │ compact/        │ │  ├─ fileHistory  │
+│  ├─ checkPerms() │ │  auto-compact   │ │  ├─ agents       │
+│  ├─ render()     │ │ mcp/            │ │  └─ fastMode     │
+│  └─ prompt()     │ │  MCP protocol   │ │                  │
+│                  │ │ analytics/      │ │ React Context    │
+│ 40+ Built-in:    │ │  telemetry      │ │  ├─ useAppState  │
+│  ├─ BashTool     │ │ tools/          │ │  └─ useSetState  │
+│  ├─ FileRead     │ │  executor       │ │                  │
+│  ├─ FileEdit     │ │ plugins/        │ └──────────────────┘
+│  ├─ Glob/Grep    │ │  loader         │
+│  ├─ AgentTool    │ │ settingsSync/   │
+│  ├─ WebFetch     │ │  cross-device   │
+│  └─ MCPTool      │ │ oauth/          │
+│                  │ │  auth flow      │
+└──────────────────┘ └─────────────────┘
+              │                │
+              ▼                ▼
+┌──────────────────┐ ┌─────────────────┐
+│   TASK SYSTEM    │ │   BRIDGE LAYER  │
+│                  │ │                 │
+│ Task Types:      │ │ bridgeMain.ts   │
+│  ├─ local_bash   │ │  session mgmt   │
+│  ├─ local_agent  │ │ bridgeApi.ts    │
+│  ├─ remote_agent │ │  HTTP client    │
+│  ├─ in_process   │ │ workSecret.ts   │
+│  ├─ dream        │ │  auth tokens    │
+│  └─ workflow     │ │ sessionRunner   │
+│                  │ │  process spawn  │
+│ ID: prefix+8chr  │ └─────────────────┘
+│  b=bash a=agent  │
+│  r=remote t=team │
+└──────────────────┘
+```
+
+## The Four Main Layers
+
+<CardGroup cols={2}>
+  <Card title="Entry Layer" icon="door-open">
+    `cli.tsx` parses CLI flags and version info, then delegates to `main.tsx`. From there, the app forks: interactive sessions render with React/Ink via `REPL.tsx`, while SDK/headless consumers go through `QueryEngine.ts`.
+  </Card>
+  <Card title="Query Engine" icon="gear">
+    The SDK-facing lifecycle engine. `submitMessage()` returns an `AsyncGenerator<SDKMessage>` that drives the full agent loop — assembling prompts, handling slash commands, streaming tool execution, and compacting context.
+  </Card>
+  <Card title="Three Pillars" icon="columns-3">
+    **Tool System** — 40+ tools behind a uniform `Tool<Input, Output, Progress>` interface. **Service Layer** — API client, compact engine, MCP manager, analytics. **State Layer** — `AppStateStore` providing React context for permissions, file history, and model settings.
+  </Card>
+  <Card title="Task & Bridge Layer" icon="network-wired">
+    **Tasks** represent long-running work: `local_bash`, `local_agent`, `remote_agent`, `in_process`, `dream`, and `workflow`. The **Bridge Layer** (`bridgeMain.ts`) connects to Claude Desktop or remote containers via HTTP with JWT auth and backoff.
+  </Card>
+</CardGroup>
+
+## Key Design Patterns
+
+| Pattern | Where used | Purpose |
+|---|---|---|
+| **AsyncGenerator streaming** | `QueryEngine`, `query()` | Full-chain streaming from API response to consumer |
+| **Builder + Factory** | `buildTool()` in `Tool.ts` | Safe defaults and uniform interface for all tools |
+| **Branded Types** | `SystemPrompt`, `asSystemPrompt()` | Prevent string/array type confusion at compile time |
+| **Feature Flags + DCE** | `feature()` from `bun:bundle` | Compile-time dead code elimination for 108 internal modules |
+| **Discriminated Unions** | `Message` types in `types/message.ts` | Type-safe handling of user/assistant/progress/system messages |
+| **Observer + State Machine** | `StreamingToolExecutor` | Tool execution lifecycle tracking with concurrent/serial partitioning |
+| **Snapshot State** | `FileHistoryState` | Undo/redo capability for file operations |
+| **Ring Buffer** | Error log | Bounded memory usage during long sessions |
+| **Fire-and-Forget Write** | `recordTranscript()` | Non-blocking JSONL persistence with ordering guarantees |
+| **Lazy Schema** | `lazySchema()` | Defer Zod schema evaluation for startup performance |
+| **Context Isolation** | `AsyncLocalStorage` | Per-agent context in a shared process for multi-agent runs |
+
+## Directory Reference
+
+```
+src/
+├── main.tsx                 # REPL bootstrap, 4,683 lines
+├── QueryEngine.ts           # SDK/headless query lifecycle engine
+├── query.ts                 # Main agent loop (785KB, largest file)
+├── Tool.ts                  # Tool interface + buildTool factory
+├── Task.ts                  # Task types, IDs, state base
+├── tools.ts                 # Tool registry, presets, filtering
+├── commands.ts              # Slash command definitions (~80 commands)
+│
+├── bridge/                  # Claude Desktop / remote bridge
+│   ├── bridgeMain.ts        #   Session lifecycle manager
+│   ├── bridgeApi.ts         #   HTTP client
+│   ├── workSecret.ts        #   Auth tokens
+│   └── sessionRunner.ts     #   Process spawning
+│
+├── services/                # Business logic layer
+│   ├── api/claude.ts        #   Streaming API calls
+│   ├── compact/             #   Context compression strategies
+│   ├── mcp/                 #   MCP connection management
+│   └── tools/               #   Tool execution engine
+│       ├── StreamingToolExecutor.ts
+│       └── toolOrchestration.ts
+│
+├── state/                   # Application state
+│   ├── AppStateStore.ts     #   Store definition
+│   └── AppState.tsx         #   React provider + hooks
+│
+├── tasks/                   # Task implementations
+│   ├── LocalShellTask/      #   Bash command execution
+│   ├── LocalAgentTask/      #   Sub-agent execution
+│   ├── RemoteAgentTask/     #   Remote agent via bridge
+│   ├── InProcessTeammateTask/ # In-process teammate
+│   └── DreamTask/           #   Background thinking
+│
+└── tools/                   # 40+ tool implementations
+    ├── AgentTool/           #   Sub-agent spawning + fork
+    ├── BashTool/            #   Shell command execution
+    ├── FileReadTool/        #   File reading (PDF, image, etc.)
+    ├── FileEditTool/        #   String-replace editing
+    ├── MCPTool/             #   MCP tool wrapper
+    └── ...                  #   30+ more tools
+```
+
+## The 12 Progressive Harness Mechanisms
+
+Claude Code layers 12 production mechanisms on top of the basic agent loop. Each builds on the previous:
+
+| # | Mechanism | Description |
+|---|---|---|
+| s01 | **The Loop** | `query.ts`: the while-true loop that calls the Claude API, checks `stop_reason`, executes tools, appends results |
+| s02 | **Tool Dispatch** | `Tool.ts` + `tools.ts`: every tool registers into the dispatch map; `buildTool()` factory provides safe defaults |
+| s03 | **Planning** | `EnterPlanModeTool` / `TodoWriteTool`: list steps first, then execute |
+| s04 | **Sub-Agents** | `AgentTool` + `forkSubagent.ts`: each child gets fresh `messages[]`, keeping the main conversation clean |
+| s05 | **Knowledge on Demand** | `SkillTool` + `memdir/`: inject knowledge via `tool_result`, not system prompt; `CLAUDE.md` loaded lazily |
+| s06 | **Context Compression** | `services/compact/`: three-layer strategy — `autoCompact` (summarize) + `snipCompact` (trim) + `contextCollapse` |
+| s07 | **Persistent Tasks** | `TaskCreate/Update/Get/List`: file-based task graph with status tracking and persistence |
+| s08 | **Background Tasks** | `DreamTask` + `LocalShellTask`: daemon threads run slow commands; agent keeps thinking |
+| s09 | **Agent Teams** | `TeamCreate/Delete` + `InProcessTeammateTask`: persistent teammates with async mailboxes |
+| s10 | **Team Protocols** | `SendMessageTool`: one request-response pattern for all agent-to-agent negotiation |
+| s11 | **Autonomous Agents** | `coordinator/coordinatorMode.ts`: idle cycle + auto-claim; no lead assignment required |
+| s12 | **Worktree Isolation** | `EnterWorktreeTool/ExitWorktreeTool`: tasks manage goals, worktrees manage directories |

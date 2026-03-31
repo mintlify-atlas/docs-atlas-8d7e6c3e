@@ -1,0 +1,134 @@
+---
+title: "Environment Variables"
+description: "Environment variables that control Claude Code behavior"
+---
+
+Claude Code reads a number of environment variables at startup and throughout a session. These complement `settings.json` for cases where you need machine- or process-level control without modifying files.
+
+<Note>
+`ANTHROPIC_API_KEY` is required when authenticating via API key. Without it (and without an active OAuth session), Claude Code cannot make API calls.
+</Note>
+
+## Authentication
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `ANTHROPIC_API_KEY` | — | Anthropic API key used for direct authentication |
+| `ANTHROPIC_BASE_URL` | — | Override the Anthropic API base URL |
+| `ANTHROPIC_UNIX_SOCKET` | — | Connect to the Anthropic API over a Unix domain socket |
+| `CLAUDE_CODE_OAUTH_TOKEN` | — | OAuth bearer token injected by the calling environment |
+| `AWS_BEARER_TOKEN_BEDROCK` | — | Bearer token for AWS Bedrock authentication |
+
+## Cloud provider routing
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `CLAUDE_CODE_USE_BEDROCK` | — | Route requests through AWS Bedrock |
+| `CLAUDE_CODE_USE_VERTEX` | — | Route requests through Google Cloud Vertex AI |
+| `CLAUDE_CODE_USE_FOUNDRY` | — | Route requests through Microsoft Azure AI Foundry |
+| `AWS_REGION` | `us-east-1` | AWS region for Bedrock requests |
+| `AWS_DEFAULT_REGION` | `us-east-1` | Fallback AWS region when `AWS_REGION` is not set |
+| `ANTHROPIC_BEDROCK_BASE_URL` | — | Override the Bedrock endpoint base URL |
+| `CLOUD_ML_REGION` | `us-east5` | Default Vertex AI region |
+| `CLAUDE_CODE_SKIP_BEDROCK_AUTH` | — | Skip Bedrock authentication checks |
+
+### Vertex AI per-model region overrides
+
+Each variable below pins a specific model to a Vertex AI region:
+
+| Variable | Model prefix |
+|----------|-------------|
+| `VERTEX_REGION_CLAUDE_HAIKU_4_5` | `claude-haiku-4-5` |
+| `VERTEX_REGION_CLAUDE_3_5_HAIKU` | `claude-3-5-haiku` |
+| `VERTEX_REGION_CLAUDE_3_5_SONNET` | `claude-3-5-sonnet` |
+| `VERTEX_REGION_CLAUDE_3_7_SONNET` | `claude-3-7-sonnet` |
+| `VERTEX_REGION_CLAUDE_4_0_SONNET` | `claude-sonnet-4` |
+| `VERTEX_REGION_CLAUDE_4_5_SONNET` | `claude-sonnet-4-5` |
+| `VERTEX_REGION_CLAUDE_4_6_SONNET` | `claude-sonnet-4-6` |
+| `VERTEX_REGION_CLAUDE_4_0_OPUS` | `claude-opus-4` |
+| `VERTEX_REGION_CLAUDE_4_1_OPUS` | `claude-opus-4-1` |
+
+## Configuration paths
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `CLAUDE_CONFIG_DIR` | `~/.claude` | Override the Claude configuration home directory |
+
+## Operational modes
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `CLAUDE_CODE_SIMPLE` | — | Enable bare/simple mode: skips hooks, LSP, plugin sync, skill directory walk, attribution, background prefetches, and all keychain reads. Auth is strictly `ANTHROPIC_API_KEY` or `apiKeyHelper`. Equivalent to the `--bare` CLI flag |
+| `CLAUDE_CODE_REMOTE` | — | Enable remote container mode; sets `max-old-space-size=8192` and enables all hook events |
+| `CLAUDE_CODE_REMOTE_SESSION_ID` | — | Session ID for the current remote session |
+| `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC` | — | Disable non-essential network traffic (analytics, telemetry, etc.) |
+| `CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS` | — | Disable experimental beta API features |
+
+## Memory
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `CLAUDE_CODE_DISABLE_AUTO_MEMORY` | — | Disable the auto-memory system entirely. Set to `1` or `true` to turn off; `0` or `false` to force-enable even when `autoMemoryEnabled: false` is in settings |
+| `CLAUDE_CODE_REMOTE_MEMORY_DIR` | — | Override the base directory for remote session memory storage |
+| `CLAUDE_COWORK_MEMORY_PATH_OVERRIDE` | — | Full-path override for the auto-memory directory (used by Cowork/SDK) |
+| `CLAUDE_COWORK_MEMORY_EXTRA_GUIDELINES` | — | Extra memory policy text injected into memory prompts |
+
+## Context and compaction
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `DISABLE_COMPACT` | — | Disable context compaction entirely |
+| `DISABLE_AUTO_COMPACT` | — | Disable automatic context compaction (manual compact still works) |
+| `DISABLE_BACKGROUND_TASKS` | — | Disable background task execution |
+| `API_MAX_INPUT_TOKENS` | — | Override the maximum input token limit |
+| `API_TARGET_INPUT_TOKENS` | — | Override the target input token count for compaction |
+
+## Thinking and model behavior
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `CLAUDE_CODE_DISABLE_THINKING` | — | Disable extended thinking mode |
+| `DISABLE_INTERLEAVED_THINKING` | — | Disable interleaved thinking |
+
+## Telemetry and observability
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `OTEL_LOG_TOOL_DETAILS` | — | Set to `1` to enable full tool input capture in OpenTelemetry telemetry |
+| `OTEL_EXPORTER_OTLP_PROTOCOL` | — | OpenTelemetry exporter protocol (e.g. `grpc`, `http/protobuf`) |
+| `NODE_EXTRA_CA_CERTS` | — | Path to extra CA certificate file for custom TLS trust roots |
+
+## Shell and editor behavior
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `CLAUDE_BASH_MAINTAIN_PROJECT_WORKING_DIR` | — | Reset the working directory to the project root after each Bash command |
+| `CLAUDE_CODE_GIT_BASH_PATH` | — | Path to git-bash executable (Windows) |
+| `EDITOR` | — | Editor to open when `/memory` is invoked and no `$VISUAL` is set |
+| `VISUAL` | — | Preferred editor; takes precedence over `$EDITOR` |
+| `SHELL` | — | Shell used for command execution |
+
+## Networking
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `CLAUDE_CODE_DISABLE_COMMAND_INJECTION_CHECK` | — | Disable the command injection safety check (not recommended) |
+
+## How environment variables interact with settings
+
+Environment variables are evaluated at the process level and take effect for the lifetime of the Claude Code process. They are not written to `settings.json`.
+
+The `env` field in `settings.json` lets you set environment variables that are applied to each Claude Code session:
+
+```json
+{
+  "env": {
+    "ANTHROPIC_BASE_URL": "https://my-proxy.example.com",
+    "NODE_EXTRA_CA_CERTS": "/etc/ssl/my-ca-bundle.crt"
+  }
+}
+```
+
+<Note>
+Truthy values for boolean environment variables are `1`, `true`, `yes`, and `on` (case-insensitive). Falsy values are `0`, `false`, `no`, and `off`. An unset variable is treated as falsy.
+</Note>

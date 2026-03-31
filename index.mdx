@@ -1,97 +1,61 @@
 ---
-title: "Introduction"
-description: "Welcome to the new home for your documentation"
+title: "Claude Code"
+description: "An AI-powered coding assistant CLI with an agentic loop, 40+ built-in tools, 80+ slash commands, and multi-agent orchestration — extracted from @anthropic-ai/claude-code v2.1.88."
 ---
 
-## Setting up
+Claude Code is Anthropic's production-grade AI coding assistant. It embeds a streaming agentic loop powered by Claude, capable of reading files, executing shell commands, searching the web, spawning sub-agents, and managing long-running tasks — all within your terminal.
 
-Get your documentation site up and running in minutes.
+This documentation covers the source code extracted from the `@anthropic-ai/claude-code` npm package v2.1.88, providing an in-depth reference for the architecture, tools, commands, and internal systems.
 
-<Card
-  title="Start here"
-  icon="rocket"
-  href="/quickstart"
-  horizontal
->
-  Follow our three step quickstart guide.
-</Card>
-
-## Make it yours
-
-Design a docs site that looks great and empowers your users.
-
-<Columns cols={2}>
-  <Card
-    title="Edit locally"
-    icon="pen-to-square"
-    href="/development"
-  >
-    Edit your docs locally and preview them in real time.
+<CardGroup cols={2}>
+  <Card title="Quick Start" icon="rocket" href="/quickstart">
+    Get Claude Code running in minutes with authentication and your first query.
   </Card>
-  <Card
-    title="Customize your site"
-    icon="palette"
-    href="/essentials/settings"
-  >
-    Customize the design and colors of your site to match your brand.
+  <Card title="Installation" icon="download" href="/installation">
+    Install options: npm global, run pre-built CLI, or build from source.
   </Card>
-    <Card
-    title="Set up navigation"
-    icon="map"
-    href="/essentials/navigation"
-  >
-    Organize your docs to help users find what they need and succeed with your product.
+  <Card title="Core Concepts" icon="lightbulb" href="/concepts/agent-loop">
+    Understand the agent loop, tool system, permission model, and context management.
   </Card>
-  <Card
-    title="API documentation"
-    icon="terminal"
-    href="/api-reference/introduction"
-  >
-    Auto-generate API documentation from OpenAPI specifications.
+  <Card title="Architecture" icon="diagram-project" href="/architecture/overview">
+    Deep dive into the query engine, multi-agent system, MCP integration, and persistence.
   </Card>
-</Columns>
+</CardGroup>
 
-## Create beautiful pages
+## Explore the reference
 
-Everything you need to create world-class documentation.
+<CardGroup cols={2}>
+  <Card title="Built-in Tools" icon="wrench" href="/reference/tools/file-operations">
+    40+ tools for file operations, search, execution, agents, and MCP protocol.
+  </Card>
+  <Card title="Slash Commands" icon="terminal" href="/reference/commands/overview">
+    80+ slash commands for session management, configuration, and workflow control.
+  </Card>
+  <Card title="Configuration" icon="gear" href="/configuration/settings">
+    Settings, environment variables, hooks, and the CLAUDE.md memory system.
+  </Card>
+  <Card title="Analysis Reports" icon="magnifying-glass" href="/reference/analysis/telemetry-privacy">
+    Research findings: telemetry, hidden features, remote control, and roadmap.
+  </Card>
+</CardGroup>
 
-<Columns cols={2}>
-  <Card
-    title="Write with MDX"
-    icon="pen-fancy"
-    href="/essentials/markdown"
-  >
-    Use MDX to style your docs pages.
-  </Card>
-  <Card
-    title="Code samples"
-    icon="code"
-    href="/essentials/code"
-  >
-    Add sample code to demonstrate how to use your product.
-  </Card>
-  <Card
-    title="Images"
-    icon="image"
-    href="/essentials/images"
-  >
-    Display images and other media.
-  </Card>
-  <Card
-    title="Reusable snippets"
-    icon="recycle"
-    href="/essentials/reusable-snippets"
-  >
-    Write once and reuse across your docs.
-  </Card>
-</Columns>
+## Key capabilities
 
-## Need inspiration?
+<Steps>
+  <Step title="Agentic loop">
+    Claude Code runs a continuous loop: send a prompt to Claude, receive a response, execute any requested tools, append results, and loop back — until Claude stops requesting tool calls.
+  </Step>
+  <Step title="Permission system">
+    Every tool call passes through a layered permission system: pre-tool hooks, always-allow/deny rules, and interactive prompts. Configure permissions via `settings.json` or CLI flags.
+  </Step>
+  <Step title="Multi-agent orchestration">
+    Spawn sub-agents via `AgentTool` in fork, worktree, or in-process mode. Coordinate teams of agents sharing a task board and message inbox using `TeamCreateTool` and `SendMessageTool`.
+  </Step>
+  <Step title="MCP integration">
+    Connect to any Model Context Protocol server (stdio, SSE, HTTP, WebSocket) to extend Claude Code with custom tools and resources using the standard MCP protocol.
+  </Step>
+</Steps>
 
-<Card
-  title="See complete examples"
-  icon="stars"
-  href="https://mintlify.com/customers"
->
-  Browse our showcase of exceptional documentation sites.
-</Card>
+<Note>
+  This repository contains decompiled source code for technical research and educational purposes. All source code is copyright Anthropic. Commercial use is prohibited.
+</Note>

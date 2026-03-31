@@ -1,0 +1,270 @@
+---
+title: "Session Management Commands"
+description: "Commands for managing conversation history, context, cost tracking, and session lifecycle."
+---
+
+These commands control the lifecycle and state of your Claude Code session — clearing or compressing context, resuming previous conversations, monitoring token and cost consumption, and exiting.
+
+<CardGroup cols={2}>
+  <Card title="/clear" icon="broom">
+    Wipe conversation history and start fresh
+  </Card>
+  <Card title="/compact" icon="compress">
+    Summarise history into a compact context
+  </Card>
+  <Card title="/resume" icon="clock-rotate-left">
+    Return to a previous conversation
+  </Card>
+  <Card title="/context" icon="chart-bar">
+    Visualise current context window fill
+  </Card>
+  <Card title="/cost" icon="circle-dollar-to-slot">
+    Show session API cost breakdown
+  </Card>
+  <Card title="/usage" icon="gauge">
+    Show plan usage limits
+  </Card>
+  <Card title="/exit" icon="door-open">
+    Quit Claude Code
+  </Card>
+</CardGroup>
+
+---
+
+## /clear
+
+Clears the entire conversation history and frees up context. Equivalent to starting a brand-new session while staying in the same terminal.
+
+**Aliases:** `reset`, `new`  
+**Arguments:** none  
+**Non-interactive:** no
+
+### When to use
+
+- The conversation has drifted off-topic and you want a clean slate.
+- You've hit the context limit and `/compact` is not sufficient.
+- You want to start a completely unrelated task.
+
+<Warning>
+  `/clear` permanently discards the current conversation history from the REPL. It is not recoverable after the session ends. Use `/compact` if you want to retain a summary for continuity.
+</Warning>
+
+### Example
+
+```
+> /clear
+
+  Conversation cleared. Starting fresh.
+```
+
+---
+
+## /compact
+
+Compresses the current conversation into a summary and continues with that summary as the new context. This frees up a large portion of the context window while preserving the essential history.
+
+**Arguments:** `[optional summarisation instructions]`  
+**Non-interactive:** yes (can be used in `--print` mode)  
+**Disabled by:** `DISABLE_COMPACT=1` environment variable
+
+### How it works
+
+1. Claude Code sends the current conversation to the model with an internal summarisation prompt.
+2. The model produces a concise summary capturing key decisions, code changes, and outstanding tasks.
+3. The conversation is replaced with the summary as a system message, freeing context.
+4. If session memory is configured, the summary is also written to the session memory file.
+
+### Custom summarisation instructions
+
+Pass an optional argument to guide what the summary prioritises:
+
+```
+> /compact focus on the changes we made to the authentication module
+```
+
+Without arguments, the default summarisation prompt is used, which tries to capture all important context.
+
+<Info>
+  `/compact` is also triggered automatically by Claude Code when the context window is approaching its limit, unless disabled by configuration.
+</Info>
+
+### Examples
+
+Compact with default instructions:
+
+```
+> /compact
+
+  Compacting conversation... done.
+  Summary written. Context reduced from 87% → 12%.
+```
+
+Compact with custom focus:
+
+```
+> /compact only keep context about the database schema and migration plan
+```
+
+Compact in non-interactive (print) mode:
+
+```bash
+claude --print "/compact"
+```
+
+---
+
+## /resume
+
+Opens a session picker that lets you search through and resume previous Claude Code conversations. When resumed, the full conversation history is loaded back into context.
+
+**Aliases:** `continue`  
+**Arguments:** `[conversation id or search term]`  
+**Non-interactive:** no
+
+### Usage
+
+Run without arguments to open the interactive session browser:
+
+```
+> /resume
+```
+
+Pass a session ID or search term to jump directly to a match:
+
+```
+> /resume auth-refactor
+> /resume 01J8KZ...
+```
+
+### Session browser
+
+The browser shows sessions sorted by most recent activity. You can:
+- Type to filter by session content or description
+- Use arrow keys to navigate
+- Press Enter to load the selected session
+
+<Tip>
+  Sessions are stored in `~/.claude/projects/`. Each project directory contains `.jsonl` transcript files named by session ID.
+</Tip>
+
+---
+
+## /context
+
+Displays the current context window utilisation as a colour-coded grid. Each cell represents a fraction of the total context window.
+
+**Arguments:** none  
+**Non-interactive:** yes (shows raw numbers in non-interactive mode)
+
+### Example output
+
+```
+> /context
+
+  Context window: ████████████████░░░░░░░░  63% used
+  Tokens: 81,920 / 128,000
+  ├─ System prompt:   4,200
+  ├─ Tool definitions: 3,100
+  ├─ Conversation:   74,620
+```
+
+Colours shift from green → yellow → red as the window fills. When above ~80%, consider running `/compact` or starting a new session with `/clear`.
+
+---
+
+## /cost
+
+Shows the total API cost and time elapsed for the current session, broken down by model and token type.
+
+**Arguments:** none  
+**Non-interactive:** yes  
+**Hidden for:** claude.ai subscribers (cost is covered by subscription)
+
+### Example output
+
+```
+> /cost
+
+  Session cost summary
+  ─────────────────────────────────────
+  Duration:          14m 32s
+  Input tokens:      124,510   $0.3735
+  Output tokens:      18,204   $0.2731
+  Cache write:        41,200   $0.0412
+  Cache read:         82,800   $0.0083
+  ─────────────────────────────────────
+  Total:                       $0.6961
+```
+
+<Note>
+  `/cost` shows the cost for the **current session only**. Use `/insights` to analyse costs across multiple historical sessions.
+</Note>
+
+---
+
+## /usage
+
+Displays your plan usage against the current billing period's limits. Available to claude.ai subscribers only.
+
+**Arguments:** none  
+**Availability:** claude.ai subscribers
+
+### Example output
+
+```
+> /usage
+
+  Plan: Pro
+  ─────────────────────────────────────────────
+  Messages this period:   342 / unlimited
+  Opus usage:              28 / 50  ████████░░  56%
+  Resets:                 in 18 days
+```
+
+---
+
+## /exit
+
+Exits the Claude Code REPL immediately. Any unsaved state (conversation history, background tasks) is cleaned up gracefully.
+
+**Aliases:** `quit`  
+**Arguments:** none
+
+### Example
+
+```
+> /exit
+```
+
+You can also exit with the standard terminal shortcut `Ctrl+D` (sends EOF) or `Ctrl+C` twice in quick succession.
+
+<Info>
+  Background tasks started with `run_in_background: true` are terminated when you exit. If you want them to continue, detach from the session instead of exiting.
+</Info>
+
+---
+
+## /export
+
+Exports the current conversation to a file in your chosen format. Useful for sharing transcripts or archiving sessions.
+
+**Arguments:** `[path]`
+
+```
+> /export
+> /export ~/Desktop/session-transcript.md
+```
+
+---
+
+## /rewind
+
+Steps back to an earlier point in the conversation, discarding messages after the selected checkpoint.
+
+**Arguments:** none (opens interactive rewind UI)
+
+```
+> /rewind
+```
+
+Use arrow keys to select how far back to rewind. Messages after the selected point are removed from context.

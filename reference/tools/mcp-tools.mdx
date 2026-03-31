@@ -1,0 +1,367 @@
+---
+title: "MCP Protocol Tools"
+description: "Tools for interacting with Model Context Protocol servers, web content, and search."
+---
+
+Claude Code integrates with the [Model Context Protocol (MCP)](https://modelcontextprotocol.io) to extend its capabilities with external servers. This page covers the built-in tools that bridge Claude Code to MCP servers, plus the web-access tools **WebFetchTool** and **WebSearchTool**.
+
+<CardGroup cols={2}>
+  <Card title="MCPTool" icon="plug">
+    Execute tools provided by connected MCP servers
+  </Card>
+  <Card title="ListMcpResourcesTool" icon="list">
+    Enumerate resources available on MCP servers
+  </Card>
+  <Card title="ReadMcpResourceTool" icon="file-import">
+    Read a specific resource by URI from an MCP server
+  </Card>
+  <Card title="McpAuthTool" icon="key">
+    Initiate OAuth authentication for an MCP server
+  </Card>
+  <Card title="WebFetchTool" icon="globe">
+    Fetch and process content from a URL
+  </Card>
+  <Card title="WebSearchTool" icon="magnifying-glass-arrows-rotate">
+    Execute a web search and retrieve results
+  </Card>
+</CardGroup>
+
+---
+
+## MCPTool
+
+MCPTool is the generic wrapper that exposes every tool registered by a connected MCP server as a first-class Claude Code tool. Each MCP server tool becomes individually callable under the naming convention:
+
+```
+mcp__<server-name>__<tool-name>
+```
+
+For example, a server named `github` providing a `create_issue` tool is exposed as `mcp__github__create_issue`.
+
+**Tool name:** `mcp__<server>__<tool>` (dynamic, per connected server)  
+**Read-only:** determined by the MCP server  
+**Concurrency-safe:** determined by the MCP server  
+**Destructive:** determined by the MCP server
+
+### Dynamic schema
+
+MCPTool's input schema is **passthrough** — it accepts any JSON object and forwards it verbatim to the MCP server. The actual schema for each tool is defined by the server and reported via the MCP `tools/list` RPC. Claude Code displays the server-provided description and parameter documentation in the UI.
+
+```typescript
+// Internal schema definition (passthrough)
+const inputSchema = z.object({}).passthrough()
+```
+
+When Claude Code connects to an MCP server, it calls `tools/list`, receives the tool definitions, and registers a concrete tool instance for each one — replacing the passthrough schema with the server's actual JSON Schema.
+
+### Tool naming convention
+
+| Component | Source |
+|-----------|--------|
+| `mcp__` | Fixed prefix indicating MCP origin |
+| `<server-name>` | The `name` field from the server's config in `settings.json` |
+| `<tool-name>` | The `name` field from the server's `tools/list` response |
+
+### Permission model
+
+MCP tool calls go through the same permission system as built-in tools. You can configure `always_allow` rules for specific MCP tools in `settings.json`:
+
+```json
+{
+  "permissions": {
+    "allow": [
+      "mcp__github__list_issues",
+      "mcp__filesystem__read_file"
+    ]
+  }
+}
+```
+
+### Usage example
+
+Calling a GitHub MCP tool to list open issues:
+
+```json
+{
+  "tool": "mcp__github__list_issues",
+  "input": {
+    "owner": "anthropics",
+    "repo": "claude-code",
+    "state": "open",
+    "limit": 10
+  }
+}
+```
+
+---
+
+## ListMcpResourcesTool
+
+Lists all resources (data sources) available across connected MCP servers, or scoped to a specific server. Resources are persistent, addressable data items (files, database tables, API endpoints, etc.) that an MCP server exposes for reading.
+
+**Tool name:** `ListMcpResourcesTool`  
+**Read-only:** yes  
+**Concurrency-safe:** yes  
+**Destructive:** no
+
+### Parameters
+
+<ParamField path="server" type="string">
+  Optional server name to filter results. When omitted, returns resources from all connected servers. Pass the exact server name from your MCP configuration.
+</ParamField>
+
+### Return value
+
+An array of resource descriptors:
+
+<ResponseField name="[].uri" type="string">
+  Resource URI (e.g. `file:///path/to/file`, `db://mydb/table/users`).
+</ResponseField>
+
+<ResponseField name="[].name" type="string">
+  Human-readable name for the resource.
+</ResponseField>
+
+<ResponseField name="[].mimeType" type="string">
+  Optional MIME type of the resource content.
+</ResponseField>
+
+<ResponseField name="[].description" type="string">
+  Optional description of the resource.
+</ResponseField>
+
+<ResponseField name="[].server" type="string">
+  Name of the server that provides this resource.
+</ResponseField>
+
+### Usage example
+
+```json
+{
+  "tool": "ListMcpResourcesTool",
+  "input": {
+    "server": "filesystem"
+  }
+}
+```
+
+---
+
+## ReadMcpResourceTool
+
+Reads the contents of a specific resource from an MCP server by URI. Binary content is saved to a local file; text content is returned inline.
+
+**Tool name:** `ReadMcpResourceTool`  
+**Read-only:** yes  
+**Concurrency-safe:** yes  
+**Destructive:** no
+
+### Parameters
+
+<ParamField path="server" type="string" required>
+  The MCP server name that hosts the resource.
+</ParamField>
+
+<ParamField path="uri" type="string" required>
+  The resource URI to read, as returned by `ListMcpResourcesTool`.
+</ParamField>
+
+### Return value
+
+<ResponseField name="contents" type="array">
+  Array of content items from the resource:
+  - `uri` — the resource URI
+  - `mimeType` — optional MIME type
+  - `text` — text content (present for text resources)
+  - `blobSavedTo` — local path where binary content was saved (present for binary resources)
+</ResponseField>
+
+### Usage example
+
+```json
+{
+  "tool": "ReadMcpResourceTool",
+  "input": {
+    "server": "filesystem",
+    "uri": "file:///home/user/project/config.json"
+  }
+}
+```
+
+---
+
+## McpAuthTool
+
+A pseudo-tool that is automatically injected in place of an MCP server's real tools when that server requires OAuth authentication. Calling it starts the OAuth flow and returns an authorization URL for the user to complete in their browser.
+
+**Tool name:** `mcp__<server>__authenticate` (one per unauthenticated server)  
+**Read-only:** no  
+**Concurrency-safe:** no
+
+### Authentication flow
+
+<Steps>
+  <Step title="Server needs auth">
+    Claude Code connects to the server and receives an HTTP 401. The server's real tools are replaced with a single `mcp__<server>__authenticate` pseudo-tool.
+  </Step>
+  <Step title="Initiate OAuth">
+    Claude calls `mcp__<server>__authenticate` with no parameters. Claude Code starts the OAuth flow in the background with `skipBrowserOpen: true`.
+  </Step>
+  <Step title="Share URL">
+    McpAuthTool returns `{ status: "auth_url", authUrl, message }`. Claude presents the URL to the user.
+  </Step>
+  <Step title="Browser callback">
+    The user opens the URL and completes authorization. The OAuth callback fires in the background.
+  </Step>
+  <Step title="Reconnect">
+    Claude Code calls `reconnectMcpServerImpl`, clears the auth cache, and swaps the pseudo-tool out for the server's real tools. This happens automatically — no further action is needed.
+  </Step>
+</Steps>
+
+### Parameters
+
+McpAuthTool accepts no parameters (`{}`).
+
+### Return value
+
+<ResponseField name="status" type="string">
+  `"auth_url"` — OAuth URL was obtained and should be shown to the user.  
+  `"unsupported"` — The server's transport does not support programmatic OAuth (e.g. stdio). Direct the user to run `/mcp` manually.  
+  `"error"` — The OAuth flow failed. Includes an error message.
+</ResponseField>
+
+<ResponseField name="message" type="string">
+  Human-readable instructions or error message.
+</ResponseField>
+
+<ResponseField name="authUrl" type="string">
+  The authorization URL to open in a browser (present when `status` is `"auth_url"`).
+</ResponseField>
+
+<Note>
+  McpAuthTool only supports `sse` and `http` MCP transports. Servers using `stdio` or `claudeai-proxy` transports must be authenticated manually via the `/mcp` command.
+</Note>
+
+---
+
+## WebFetchTool
+
+Fetches content from an HTTP(S) URL, converts it to Markdown, and applies a prompt to extract or summarise the relevant parts. Useful for reading documentation, API references, or any web page.
+
+**Tool name:** `WebFetch`  
+**Read-only:** yes  
+**Concurrency-safe:** yes  
+**Destructive:** no
+
+### Parameters
+
+<ParamField path="url" type="string" required>
+  The fully-formed URL to fetch (must be a valid `https://` or `http://` URL).
+</ParamField>
+
+<ParamField path="prompt" type="string" required>
+  A natural-language prompt describing what to extract or summarise from the fetched content. The tool fetches the page, converts it to Markdown (up to ~100 000 characters), and applies this prompt to focus the output.
+</ParamField>
+
+### Return value
+
+<ResponseField name="url" type="string">
+  The URL that was fetched.
+</ResponseField>
+
+<ResponseField name="code" type="number">
+  HTTP response status code (e.g. `200`, `404`).
+</ResponseField>
+
+<ResponseField name="codeText" type="string">
+  HTTP response status text (e.g. `"OK"`, `"Not Found"`).
+</ResponseField>
+
+<ResponseField name="bytes" type="number">
+  Size of the fetched content in bytes.
+</ResponseField>
+
+<ResponseField name="result" type="string">
+  Processed output after applying the `prompt` to the fetched content.
+</ResponseField>
+
+<ResponseField name="durationMs" type="number">
+  Wall-clock time to fetch and process the content in milliseconds.
+</ResponseField>
+
+### Pre-approved hosts
+
+Certain hosts (e.g. `docs.anthropic.com`) are pre-approved and do not require user permission. All other hosts prompt for permission on first use unless configured in `settings.json`.
+
+### Usage example
+
+```json
+{
+  "tool": "WebFetch",
+  "input": {
+    "url": "https://docs.anthropic.com/en/api/getting-started",
+    "prompt": "What are the rate limits for the Messages API?"
+  }
+}
+```
+
+---
+
+## WebSearchTool
+
+Executes a web search using Anthropic's built-in search capability (`web_search_20250305`) and returns a list of matching pages with titles and URLs.
+
+**Tool name:** `WebSearch`  
+**Read-only:** yes  
+**Concurrency-safe:** yes  
+**Destructive:** no
+
+<Info>
+  WebSearchTool is only available when the active model supports the `web_search_20250305` beta tool (currently Claude models on Anthropic's API). It is automatically disabled on Bedrock, Vertex, and other providers that do not support this capability.
+</Info>
+
+### Parameters
+
+<ParamField path="query" type="string" required>
+  The search query (minimum 2 characters).
+</ParamField>
+
+<ParamField path="allowed_domains" type="string[]">
+  Restrict results to pages from these domains only. For example `["docs.anthropic.com", "github.com"]`.
+</ParamField>
+
+<ParamField path="blocked_domains" type="string[]">
+  Exclude results from these domains. Takes precedence over `allowed_domains`.
+</ParamField>
+
+### Return value
+
+<ResponseField name="query" type="string">
+  The search query that was executed.
+</ResponseField>
+
+<ResponseField name="results" type="array">
+  Mixed array of search result objects and text commentary from the model. Each search result has:
+  - `tool_use_id` — identifier of the search invocation
+  - `content[]` — array of `{ title, url }` search hits
+</ResponseField>
+
+<ResponseField name="durationSeconds" type="number">
+  Total time to complete the search operation.
+</ResponseField>
+
+### Usage example
+
+```json
+{
+  "tool": "WebSearch",
+  "input": {
+    "query": "Claude Code MCP integration tutorial",
+    "allowed_domains": ["docs.anthropic.com"]
+  }
+}
+```
+
+<Tip>
+  Combine WebSearchTool with WebFetchTool: use WebSearchTool to identify relevant pages, then WebFetchTool to read the content in detail.
+</Tip>

@@ -1,0 +1,137 @@
+---
+title: "Permission Model"
+description: "How Claude Code decides whether a tool call is allowed — the five-stage authorization pipeline."
+---
+
+Every tool call passes through a five-stage authorization pipeline before execution. The pipeline is fail-closed: a tool that fails any stage is denied and the agent receives a `tool_result` error explaining why. No stage is skipped.
+
+## The permission pipeline
+
+<Steps>
+  <Step title="validateInput()">
+    The first gate is the tool's own `validateInput()` method. It checks that the input arguments are structurally valid and within the tool's allowed scope — for example, that a file path is within the working directory, or that a shell command doesn't contain disallowed patterns.
+
+    A failed `validateInput()` returns `{ result: false, message, errorCode }`. The error is sent back to the model as a `tool_result` so it can correct its approach. No permission dialog is shown to the user.
+
+    `validateInput()` is **optional** on the `Tool` interface. Tools that omit it skip directly to the next stage.
+  </Step>
+  <Step title="PreToolUse hooks">
+    User-defined shell commands configured in `settings.json` under the `hooks.PreToolUse` key run next. Each hook receives the tool name and its input as JSON and exits with one of three outcomes:
+
+    - **Approve** (exit code 0, no output) — proceed to the next stage
+    - **Deny** (exit code 0, output starting with `DENY:`) — block the call with the provided reason
+    - **Modify** (exit code 0, JSON output with `updatedInput`) — replace the input before proceeding
+
+    Hooks run with a 60-second timeout. A hook that times out is treated as an approval.
+
+    ```json
+    {
+      "hooks": {
+        "PreToolUse": [
+          {
+            "matcher": "Bash",
+            "hooks": [{ "type": "command", "command": "my-audit-script.sh" }]
+          }
+        ]
+      }
+    }
+    ```
+  </Step>
+  <Step title="Permission rules">
+    Three static rule sets are checked in order. Rules are stored in `AppState.toolPermissionContext` and sourced from `settings.json`, CLI arguments, and decisions made earlier in the session.
+
+    | Rule set | Behavior |
+    |----------|---------|
+    | `alwaysAllowRules` | If the tool name and input match a pattern in this set, the call is approved automatically. No prompt is shown. |
+    | `alwaysDenyRules` | If the tool name and input match a pattern in this set, the call is denied automatically. No prompt is shown. |
+    | `alwaysAskRules` | If the tool name and input match a pattern in this set, the call always shows an interactive prompt — even if the user previously chose "Allow Always." |
+
+    Rule patterns support tool-name-level matching and, for tools that implement `preparePermissionMatcher()`, input-level matching (e.g., `Bash(git *)` to match only git commands).
+
+    If no rule matches, execution falls through to the interactive prompt.
+  </Step>
+  <Step title="Interactive prompt">
+    When no rule covers the current call, the user sees a permission dialog showing the tool name and its input. Three options are available:
+
+    | Choice | Effect |
+    |--------|--------|
+    | **Allow Once** | Approve this specific call. The next identical call will prompt again. |
+    | **Allow Always** | Approve all future calls to this tool with this pattern. Adds a rule to `alwaysAllowRules` for the session. |
+    | **Deny** | Block this call. The model receives a `tool_result` error. |
+
+    In non-interactive sessions (SDK/headless mode, background agents), there is no terminal to show a dialog. The `shouldAvoidPermissionPrompts` flag in the permission context causes all interactive prompts to auto-deny instead.
+  </Step>
+  <Step title="checkPermissions()">
+    The final stage is the tool's own `checkPermissions()` method. This is called only after all previous stages have approved the call. It contains tool-specific authorization logic that is too detailed for general rules — for example, verifying that a file path falls within an allowed working directory, or that a network request targets an allowed host.
+
+    The default implementation provided by `buildTool()` always approves: `{ behavior: 'allow', updatedInput: input }`. Security-sensitive tools override this.
+  </Step>
+</Steps>
+
+## Permission context
+
+The permission context is stored in `AppState.toolPermissionContext` and is an immutable (`DeepImmutable`) snapshot at the start of each turn:
+
+```ts
+// src/Tool.ts
+export type ToolPermissionContext = DeepImmutable<{
+  mode: PermissionMode
+  additionalWorkingDirectories: Map<string, AdditionalWorkingDirectory>
+  alwaysAllowRules: ToolPermissionRulesBySource
+  alwaysDenyRules: ToolPermissionRulesBySource
+  alwaysAskRules: ToolPermissionRulesBySource
+  isBypassPermissionsModeAvailable: boolean
+  isAutoModeAvailable?: boolean
+  shouldAvoidPermissionPrompts?: boolean
+  awaitAutomatedChecksBeforeDialog?: boolean
+  prePlanMode?: PermissionMode
+}>
+```
+
+Rules are keyed by source (e.g., `'cli'`, `'settings'`, `'session'`) so that CLI-provided rules and user-session decisions can be managed separately.
+
+## Permission modes
+
+The `mode` field in `ToolPermissionContext` controls the overall permission posture:
+
+| Mode | Behavior |
+|------|---------|
+| `'default'` | Normal operation. Rules and prompts apply. |
+| `'plan'` | Read-only mode. All writes are blocked. The agent can inspect but not change anything. |
+| `'bypassPermissions'` | All permission checks are skipped. Requires `isBypassPermissionsModeAvailable: true`. |
+| `'auto'` | Auto-approval mode via the security classifier. Requires `isAutoModeAvailable: true`. |
+
+## Bypassing permissions
+
+The `--dangerously-skip-permissions` CLI flag sets `mode` to `'bypassPermissions'`, skipping all interactive prompts. This flag is intended for fully automated pipelines where there is no user present and all risk is accepted by the caller.
+
+```bash
+node cli.js --dangerously-skip-permissions -p "Refactor all files in src/"
+```
+
+<Warning>
+`--dangerously-skip-permissions` disables all permission gates including `checkPermissions()`. The agent can read, write, delete, and execute anything within reach. Only use this in sandboxed environments or automated pipelines where you fully trust the model's actions.
+</Warning>
+
+## PostToolUse hooks
+
+A symmetric `PostToolUse` hook runs after a tool completes successfully. It receives the tool name, input, and output. Use it for audit logging, side-effects, or triggering downstream automation.
+
+```json
+{
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "FileEditTool",
+        "hooks": [{ "type": "command", "command": "git add -p" }]
+      }
+    ]
+  }
+}
+```
+
+## Denial tracking
+
+Claude Code tracks consecutive permission denials in `DenialTrackingState`. After enough denials accumulate (the threshold is configurable), the system falls back to prompting the user directly regardless of any cached `alwaysAllow` rules. This prevents a stuck loop where the model repeatedly tries a denied operation.
+
+For async sub-agents whose `setAppState` is a no-op, denial tracking is maintained in a mutable `localDenialTracking` field on the `ToolUseContext` so the counter still accumulates at the sub-agent level.

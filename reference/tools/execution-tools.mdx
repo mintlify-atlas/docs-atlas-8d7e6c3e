@@ -1,0 +1,223 @@
+---
+title: "Execution Tools"
+description: "Tools for executing shell commands, scripts, and PowerShell cmdlets."
+---
+
+Claude Code exposes two execution tools: **BashTool** for Unix-like shells and **PowerShellTool** for Windows PowerShell. Both wrap command execution with permission checks, sandbox enforcement, background-task support, and intelligent interruption handling.
+
+<CardGroup cols={2}>
+  <Card title="BashTool" icon="terminal">
+    Execute shell commands on macOS, Linux, and WSL
+  </Card>
+  <Card title="PowerShellTool" icon="windows">
+    Execute PowerShell cmdlets and scripts on Windows
+  </Card>
+</CardGroup>
+
+<Warning>
+  Execution tools can run arbitrary system commands. They require explicit permission from the user before each invocation (unless the user has configured `always_allow` rules). Destructive commands — such as `rm -rf`, `git reset --hard`, or `git push --force` — prompt an additional warning before execution.
+</Warning>
+
+---
+
+## BashTool
+
+Executes a bash command and captures its stdout and stderr. The working directory persists between commands within a session, but the shell environment (variables, functions, aliases) does **not** — each invocation starts a fresh shell initialized from the user's profile.
+
+**Tool name:** `Bash`  
+**Read-only:** no  
+**Concurrency-safe:** no (commands execute serially)  
+**Destructive:** yes (can modify or delete files and system state)
+
+### Parameters
+
+<ParamField path="command" type="string" required>
+  The shell command to execute. Use `&&` to chain dependent commands and `|` for pipelines. Avoid newlines as command separators — use `;` or `&&` instead.
+</ParamField>
+
+<ParamField path="timeout" type="number">
+  Optional timeout in milliseconds. Defaults to the session-configured bash timeout (typically 120 000 ms / 2 minutes). Maximum value is also configurable per-session. When the timeout is reached, the command is killed and a timeout error is returned.
+</ParamField>
+
+<ParamField path="description" type="string">
+  A short, active-voice description of what this command does (shown in the UI while the command runs). Examples: `"Install package dependencies"`, `"Run unit tests"`, `"Build Docker image"`.
+</ParamField>
+
+<ParamField path="run_in_background" type="boolean" default="false">
+  When `true`, the command is started as a background task. The tool returns immediately with a `backgroundTaskId`. Claude Code sends a notification when the task completes. Use `Read` to inspect the output file at the path returned in `backgroundTaskId`.
+
+  Omitted entirely when the `CLAUDE_CODE_DISABLE_BACKGROUND_TASKS` environment variable is truthy.
+</ParamField>
+
+<ParamField path="dangerouslyDisableSandbox" type="boolean" default="false">
+  Override sandbox restrictions for this single invocation. Only applies when sandboxing is enabled and `allowUnsandboxedCommands` is permitted by policy. Prompts the user for explicit confirmation before the command runs.
+</ParamField>
+
+### Return value
+
+<ResponseField name="stdout" type="string">
+  Standard output produced by the command.
+</ResponseField>
+
+<ResponseField name="stderr" type="string">
+  Standard error output produced by the command.
+</ResponseField>
+
+<ResponseField name="interrupted" type="boolean">
+  `true` if the command was interrupted (user pressed Ctrl+C or the session was aborted).
+</ResponseField>
+
+<ResponseField name="backgroundTaskId" type="string">
+  Task ID returned when `run_in_background` is `true`. Use this to reference the background task.
+</ResponseField>
+
+<ResponseField name="backgroundedByUser" type="boolean">
+  `true` if the user manually sent the command to the background via Ctrl+B.
+</ResponseField>
+
+<ResponseField name="assistantAutoBackgrounded" type="boolean">
+  `true` if Claude Code automatically moved a long-running blocking command to the background in assistant mode (after ~15 seconds).
+</ResponseField>
+
+<ResponseField name="returnCodeInterpretation" type="string">
+  Human-readable interpretation of a non-zero exit code when the tool can identify its meaning (e.g. `"grep found no matches"`).
+</ResponseField>
+
+<ResponseField name="noOutputExpected" type="boolean">
+  `true` for commands that conventionally produce no stdout on success (e.g. `mv`, `mkdir`, `chmod`). The UI shows "Done" instead of "(No output)".
+</ResponseField>
+
+<ResponseField name="persistedOutputPath" type="string">
+  Path to the full output on disk when stdout/stderr exceeded the inline size limit.
+</ResponseField>
+
+<ResponseField name="persistedOutputSize" type="number">
+  Total size in bytes of the persisted output.
+</ResponseField>
+
+### Background tasks
+
+Set `run_in_background: true` for long-running processes such as dev servers, build watchers, or test suites where you do not need to block on the result.
+
+```json
+{
+  "tool": "Bash",
+  "input": {
+    "command": "npm run dev",
+    "description": "Start the development server",
+    "run_in_background": true
+  }
+}
+```
+
+<Info>
+  Set `CLAUDE_CODE_DISABLE_BACKGROUND_TASKS=1` in the environment to disable the `run_in_background` parameter entirely. When this variable is set, the parameter is omitted from the tool's schema.
+</Info>
+
+### Sandbox mode
+
+When sandboxing is enabled (via `settings.json` or the `/sandbox` command), all commands run inside an OS-level sandbox that enforces:
+
+- **Filesystem read restrictions** — deny-only or allow-only path lists
+- **Filesystem write restrictions** — allow-only path list with optional deny-within-allow
+- **Network restrictions** — allowed/denied host lists and Unix socket policy
+
+Use `$TMPDIR` for temporary files inside the sandbox — it is automatically set to a writable directory. Do not use `/tmp` directly.
+
+To bypass sandboxing for a single command, set `dangerouslyDisableSandbox: true`. This requires user confirmation and should be used only when a specific command fails due to sandbox restrictions (look for "Operation not permitted" or "Access denied" errors).
+
+### Interrupt behavior
+
+When the user presses Ctrl+C or the session is aborted, BashTool sends `SIGTERM` to the running process and sets `interrupted: true` in the result. The model should treat an interrupted result as incomplete and handle it accordingly.
+
+### Security considerations
+
+- **Prefer dedicated tools** for file operations: use `Read`, `Edit`, `Write`, `Glob`, and `Search` instead of `cat`, `sed`, `grep`, `find`. Dedicated tools provide better permission granularity, richer progress UI, and protection against prompt-injection via file contents.
+- **Quote paths** that contain spaces: `cd "path with spaces"`.
+- **Avoid `git add -A`** — prefer staging specific files to prevent accidentally committing `.env` or credential files.
+- **Never skip hooks** (`--no-verify`, `--no-gpg-sign`) unless the user explicitly requests it.
+- **Never force-push** to `main`/`master` without explicit user instruction.
+
+### Usage examples
+
+Run tests:
+
+```json
+{
+  "tool": "Bash",
+  "input": {
+    "command": "npm test -- --coverage",
+    "description": "Run test suite with coverage",
+    "timeout": 120000
+  }
+}
+```
+
+Chain dependent commands:
+
+```json
+{
+  "tool": "Bash",
+  "input": {
+    "command": "git add src/utils.ts && git commit -m 'fix: handle null input in parseDate'",
+    "description": "Stage and commit utility fix"
+  }
+}
+```
+
+---
+
+## PowerShellTool
+
+The Windows equivalent of BashTool. Executes PowerShell cmdlets and scripts via the `pwsh` (PowerShell Core) binary, with the same permission model, sandbox enforcement, and background-task support as BashTool.
+
+**Tool name:** `PowerShell`  
+**Read-only:** no  
+**Concurrency-safe:** no  
+**Destructive:** yes  
+**Platform:** Windows only (disabled on macOS/Linux)
+
+### Parameters
+
+<ParamField path="command" type="string" required>
+  The PowerShell command or script block to execute.
+</ParamField>
+
+<ParamField path="timeout" type="number">
+  Optional timeout in milliseconds. Behaviour is identical to BashTool's `timeout`.
+</ParamField>
+
+<ParamField path="description" type="string">
+  Active-voice description shown in the UI while the cmdlet runs.
+</ParamField>
+
+<ParamField path="run_in_background" type="boolean" default="false">
+  Run the command as a background task. Same semantics as BashTool's `run_in_background`.
+</ParamField>
+
+<ParamField path="dangerouslyDisableSandbox" type="boolean" default="false">
+  Override sandbox restrictions for this invocation. Same semantics as BashTool's `dangerouslyDisableSandbox`.
+</ParamField>
+
+### Return value
+
+Identical shape to BashTool: `stdout`, `stderr`, `interrupted`, `backgroundTaskId`, `backgroundedByUser`, `assistantAutoBackgrounded`, `noOutputExpected`, `persistedOutputPath`, `persistedOutputSize`.
+
+### PowerShell-specific notes
+
+- Cmdlet names are canonicalized to lowercase before matching against read-only / search heuristics.
+- Common read-only cmdlets include `Get-Content`, `Get-Item`, `Get-ChildItem`, `Test-Path`, `Resolve-Path`.
+- Common search cmdlets include `Select-String` (grep equivalent) and `Get-ChildItem -Recurse` (find equivalent).
+- The tool requires `pwsh` (PowerShell Core 6+) to be installed. It will not fall back to `powershell.exe` (Windows PowerShell 5.x).
+
+### Usage example
+
+```json
+{
+  "tool": "PowerShell",
+  "input": {
+    "command": "Get-ChildItem -Recurse -Filter '*.ts' | Select-Object FullName",
+    "description": "List all TypeScript files recursively"
+  }
+}
+```

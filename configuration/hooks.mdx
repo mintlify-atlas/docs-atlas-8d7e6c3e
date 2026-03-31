@@ -1,0 +1,366 @@
+---
+title: "Hooks"
+description: "Pre-tool and post-tool hooks for customizing tool execution"
+---
+
+Hooks let you run custom logic before or after Claude Code invokes a tool. You can use them to log every tool call, block dangerous operations, auto-approve safe patterns, post results to a webhook, or run an LLM sub-agent to verify intent.
+
+## What hooks are
+
+A hook is a shell command, HTTP request, LLM prompt, or agentic verifier attached to a **hook event** (such as `PreToolUse`) and optionally filtered by a **matcher** (such as `"Bash"`). When the event fires, Claude Code runs all matching hooks in the order they appear in your settings.
+
+Hooks are configured under the `hooks` key in any `settings.json` file — user, project, or local. See [Settings](/configuration/settings) for file locations.
+
+## Hook events
+
+The following hook events are available:
+
+<AccordionGroup>
+  <Accordion title="Tool lifecycle">
+    | Event | When it fires |
+    |-------|--------------|
+    | `PreToolUse` | Before a tool call is sent to Claude |
+    | `PostToolUse` | After a tool call completes successfully |
+    | `PostToolUseFailure` | After a tool call fails |
+  </Accordion>
+
+  <Accordion title="Session lifecycle">
+    | Event | When it fires |
+    |-------|--------------|
+    | `SessionStart` | When a new session begins |
+    | `SessionEnd` | When a session ends |
+    | `Setup` | Early in session setup |
+    | `Stop` | When Claude stops generating |
+    | `StopFailure` | When a stop fails |
+    | `UserPromptSubmit` | When the user submits a prompt |
+  </Accordion>
+
+  <Accordion title="Subagents and compaction">
+    | Event | When it fires |
+    |-------|--------------|
+    | `SubagentStart` | When a subagent session starts |
+    | `SubagentStop` | When a subagent session stops |
+    | `PreCompact` | Before context compaction |
+    | `PostCompact` | After context compaction |
+  </Accordion>
+
+  <Accordion title="Permissions and notifications">
+    | Event | When it fires |
+    |-------|--------------|
+    | `PermissionRequest` | When Claude requests permission for a tool |
+    | `PermissionDenied` | When a permission request is denied |
+    | `Notification` | When a notification is emitted |
+  </Accordion>
+
+  <Accordion title="File and workspace changes">
+    | Event | When it fires |
+    |-------|--------------|
+    | `FileChanged` | When a file changes on disk |
+    | `CwdChanged` | When the working directory changes |
+    | `InstructionsLoaded` | When CLAUDE.md instructions are loaded |
+    | `ConfigChange` | When settings change |
+    | `WorktreeCreate` | When a git worktree is created |
+    | `WorktreeRemove` | When a git worktree is removed |
+  </Accordion>
+</AccordionGroup>
+
+## Hook types
+
+Each hook entry specifies a `type` field that determines how it runs.
+
+<Tabs>
+  <Tab title="command">
+    Runs a shell command. The most common hook type.
+
+    ```json
+    {
+      "type": "command",
+      "command": "my-audit-script.sh",
+      "shell": "bash",
+      "timeout": 10,
+      "statusMessage": "Running audit...",
+      "async": false
+    }
+    ```
+
+    | Field | Type | Description |
+    |-------|------|-------------|
+    | `command` | `string` | Shell command to execute |
+    | `shell` | `"bash" \| "powershell"` | Shell interpreter (default: `bash`) |
+    | `timeout` | `number` | Timeout in seconds for this command |
+    | `statusMessage` | `string` | Custom spinner message while the hook runs |
+    | `async` | `boolean` | Run in background without blocking (default: `false`) |
+    | `asyncRewake` | `boolean` | Background hook that wakes the model on exit code 2 |
+    | `once` | `boolean` | Run once and remove after execution |
+    | `if` | `string` | Permission-rule syntax to conditionally run (e.g. `"Bash(git *)"`) |
+  </Tab>
+
+  <Tab title="http">
+    Posts the hook input JSON to an HTTP endpoint.
+
+    ```json
+    {
+      "type": "http",
+      "url": "https://hooks.example.com/claude",
+      "headers": {
+        "Authorization": "Bearer $MY_TOKEN"
+      },
+      "allowedEnvVars": ["MY_TOKEN"],
+      "timeout": 5
+    }
+    ```
+
+    | Field | Type | Description |
+    |-------|------|-------------|
+    | `url` | `string` | URL to POST the hook input JSON to |
+    | `headers` | `Record<string, string>` | Additional request headers; values may reference env vars via `$VAR` |
+    | `allowedEnvVars` | `string[]` | Env var names that may be interpolated in headers |
+    | `timeout` | `number` | Timeout in seconds |
+    | `if` | `string` | Conditional filter |
+
+    <Warning>
+    HTTP hook URLs are subject to the `allowedHttpHookUrls` allowlist in managed settings. If the list is set and your URL does not match, the hook is blocked.
+    </Warning>
+  </Tab>
+
+  <Tab title="prompt">
+    Evaluates an LLM prompt to approve or deny the action.
+
+    ```json
+    {
+      "type": "prompt",
+      "prompt": "Does this bash command look safe? $ARGUMENTS",
+      "model": "claude-haiku-4-5",
+      "timeout": 30
+    }
+    ```
+
+    | Field | Type | Description |
+    |-------|------|-------------|
+    | `prompt` | `string` | Prompt to evaluate; use `$ARGUMENTS` for hook input JSON |
+    | `model` | `string` | Model to use (default: small fast model) |
+    | `timeout` | `number` | Timeout in seconds |
+    | `if` | `string` | Conditional filter |
+  </Tab>
+
+  <Tab title="agent">
+    Runs a full agentic verifier with tools.
+
+    ```json
+    {
+      "type": "agent",
+      "prompt": "Verify that unit tests ran and passed. $ARGUMENTS",
+      "model": "claude-haiku-4-5",
+      "timeout": 60
+    }
+    ```
+
+    | Field | Type | Description |
+    |-------|------|-------------|
+    | `prompt` | `string` | Verification prompt; use `$ARGUMENTS` for hook input JSON |
+    | `model` | `string` | Model (default: Haiku) |
+    | `timeout` | `number` | Timeout in seconds (default: 60) |
+    | `if` | `string` | Conditional filter |
+  </Tab>
+</Tabs>
+
+## Configuration in settings.json
+
+Hooks are nested under the `hooks` key. Each top-level key is a hook event; its value is an array of **matcher objects**:
+
+```json
+{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          { "type": "command", "command": "/usr/local/bin/audit-bash.sh" }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "Write",
+        "hooks": [
+          { "type": "command", "command": "prettier --write $TOOL_OUTPUT_FILE", "async": true }
+        ]
+      }
+    ]
+  }
+}
+```
+
+Each matcher object has:
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `matcher` | `string` | Tool name or pattern to match (e.g. `"Bash"`, `"Write"`). Omit to match all tools |
+| `hooks` | `object[]` | One or more hook definitions to run when the matcher matches |
+
+## Hook execution flow
+
+<Steps>
+  <Step title="Tool call initiated">
+    Claude decides to call a tool (e.g. `Bash(git status)`).
+  </Step>
+  <Step title="PreToolUse hooks run">
+    All matching `PreToolUse` hooks execute in order. Hook receives the tool name and input as JSON via environment variables.
+  </Step>
+  <Step title="Tool executes">
+    If no hook blocked the call, the tool runs.
+  </Step>
+  <Step title="PostToolUse hooks run">
+    All matching `PostToolUse` hooks execute. Hook receives the tool output in addition to name and input.
+  </Step>
+</Steps>
+
+### Hook environment
+
+For `command` hooks, the following environment variables are available:
+
+| Variable | Value |
+|----------|-------|
+| `CLAUDE_TOOL_NAME` | Name of the tool being called (e.g. `Bash`) |
+| `CLAUDE_TOOL_INPUT` | Full JSON input to the tool |
+| `CLAUDE_HOOK_EVENT` | Event name (e.g. `PreToolUse`) |
+
+### Blocking a tool call
+
+A `PreToolUse` hook can block a tool call by exiting with a non-zero exit code. Claude receives an error and does not execute the tool.
+
+```bash
+#!/usr/bin/env bash
+# Block any rm -rf command
+if echo "$CLAUDE_TOOL_INPUT" | grep -q "rm -rf"; then
+  echo "Blocked: rm -rf is not allowed" >&2
+  exit 1
+fi
+```
+
+## Example hooks
+
+<AccordionGroup>
+  <Accordion title="Log all tool calls">
+    ```json
+    {
+      "hooks": {
+        "PreToolUse": [
+          {
+            "hooks": [
+              {
+                "type": "command",
+                "command": "logger -t claude-code \"[PreToolUse] $CLAUDE_TOOL_NAME: $CLAUDE_TOOL_INPUT\""
+              }
+            ]
+          }
+        ]
+      }
+    }
+    ```
+  </Accordion>
+
+  <Accordion title="Block dangerous bash patterns">
+    ```bash
+    #!/usr/bin/env bash
+    # ~/.claude/hooks/block-dangerous.sh
+    DANGEROUS_PATTERNS="rm -rf|sudo rm|chmod -R 777|> /etc|dd if="
+
+    if echo "$CLAUDE_TOOL_INPUT" | grep -qE "$DANGEROUS_PATTERNS"; then
+      echo "Blocked: dangerous command pattern detected" >&2
+      exit 1
+    fi
+    ```
+
+    ```json
+    {
+      "hooks": {
+        "PreToolUse": [
+          {
+            "matcher": "Bash",
+            "hooks": [
+              {
+                "type": "command",
+                "command": "~/.claude/hooks/block-dangerous.sh"
+              }
+            ]
+          }
+        ]
+      }
+    }
+    ```
+  </Accordion>
+
+  <Accordion title="Post to webhook on session end">
+    ```json
+    {
+      "hooks": {
+        "SessionEnd": [
+          {
+            "hooks": [
+              {
+                "type": "http",
+                "url": "https://hooks.example.com/claude-session-end",
+                "headers": {
+                  "Authorization": "Bearer $WEBHOOK_TOKEN"
+                },
+                "allowedEnvVars": ["WEBHOOK_TOKEN"]
+              }
+            ]
+          }
+        ]
+      }
+    }
+    ```
+  </Accordion>
+
+  <Accordion title="LLM-based safety check">
+    ```json
+    {
+      "hooks": {
+        "PreToolUse": [
+          {
+            "matcher": "Bash",
+            "hooks": [
+              {
+                "type": "prompt",
+                "prompt": "You are a security reviewer. The following is a bash command about to be run by Claude Code. Respond with {\"ok\": true} if it is safe, or {\"ok\": false, \"reason\": \"...\"} if it should be blocked.\n\n$ARGUMENTS",
+                "timeout": 15
+              }
+            ]
+          }
+        ]
+      }
+    }
+    ```
+  </Accordion>
+</AccordionGroup>
+
+## Hook sources
+
+Hooks can come from multiple sources, resolved in priority order:
+
+| Source | Location |
+|--------|----------|
+| User settings | `~/.claude/settings.json` |
+| Project settings | `.claude/settings.json` |
+| Local settings | `.claude/settings.local.json` |
+| Plugin hooks | `~/.claude/plugins/*/hooks/hooks.json` |
+| Session hooks | In-memory, temporary |
+| Built-in hooks | Registered internally by Claude Code |
+
+<Note>
+When `allowManagedHooksOnly: true` is set in managed settings, only hooks from the managed policy file run. User, project, and local hooks are ignored.
+</Note>
+
+## Disabling hooks
+
+To disable all hooks and status line execution for a session or globally:
+
+```json
+{
+  "disableAllHooks": true
+}
+```
+
+You can also use bare mode (`--bare` CLI flag or `CLAUDE_CODE_SIMPLE=1`) to skip hooks entirely along with other non-essential features.

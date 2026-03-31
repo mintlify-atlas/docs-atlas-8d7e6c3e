@@ -1,0 +1,208 @@
+---
+title: "Query Engine"
+description: "The SDK/headless query lifecycle engine — submitMessage, streaming tool execution, context compaction, and SDKMessage types."
+---
+
+`QueryEngine.ts` is the SDK/headless mode lifecycle engine. While `REPL.tsx` drives interactive terminal sessions with React/Ink, `QueryEngine.ts` exposes the same agent loop as a clean programmatic API: `submitMessage(prompt)` returns an `AsyncGenerator<SDKMessage>` that streams results back to the consumer.
+
+<Note>
+  `QueryEngine.ts` is ~1,295 lines and orchestrates the entire lifecycle from prompt ingestion through system prompt assembly, slash command parsing, agent loop execution, and JSONL persistence.
+</Note>
+
+## submitMessage Interface
+
+```typescript
+// src/QueryEngine.ts
+async *submitMessage(
+  prompt: string | ContentBlockParam[],
+  options?: {
+    sessionId?: string
+    permissionMode?: PermissionMode
+    // ...
+  }
+): AsyncGenerator<SDKMessage> {
+  // 1. fetchSystemPromptParts()  — assemble system prompt
+  // 2. processUserInput()        — handle /commands
+  // 3. query()                   — main agent loop
+  // 4. yield SDKMessage          — stream to consumer
+}
+```
+
+The generator yields `SDKMessage` values incrementally as the agent loop progresses. Consumers can `for await` over it to receive streaming output.
+
+## Internal Flow
+
+```
+submitMessage(prompt)
+      │
+      ▼
+fetchSystemPromptParts()       ← tools → prompt sections, CLAUDE.md memory
+      │
+      ▼
+processUserInput()             ← parse /commands, build UserMessage
+      │
+      ▼
+recordTranscript()             ← persist user message to disk (JSONL)
+      │
+      ▼
+┌─→ normalizeMessagesForAPI()  ← strip UI-only fields, compact if needed
+│   │
+│   ▼
+│   Claude API (streaming)     ← POST /v1/messages with tools + system prompt
+│   │
+│   ▼
+│   stream events              ← message_start → content_block_delta → message_stop
+│   │
+│   ├─ text block ──────────── → yield SDKMessage to consumer
+│   │
+│   └─ tool_use block?
+│       │
+│       ▼
+│   StreamingToolExecutor      ← partition: concurrent-safe vs serial
+│       │
+│       ▼
+│   canUseTool()               ← permission check (hooks + rules + UI prompt)
+│       │
+│       ├─ DENY ─────────────→ append tool_result(error), continue loop
+│       │
+│       └─ ALLOW
+│           │
+│           ▼
+│       tool.call()            ← execute the tool (Bash, Read, Edit, etc.)
+│           │
+│           ▼
+│       append tool_result     ← push to messages[], recordTranscript()
+│           │
+└─────────┘                   ← loop back to API call
+      │
+      ▼  (stop_reason != "tool_use")
+yield result SDKMessage        ← final text, usage, cost, session_id
+```
+
+## StreamingToolExecutor
+
+`StreamingToolExecutor` (in `src/services/tools/StreamingToolExecutor.ts`) manages concurrent tool execution within a single agent turn. It partitions the tools requested by the model into two buckets:
+
+- **Concurrent-safe tools** — `isReadOnly()` or otherwise side-effect-free; run in parallel
+- **Serial tools** — write operations like `FileEditTool`, `BashTool`; run sequentially to avoid conflicts
+
+```
+tool_use blocks from API response
+        │
+        ▼
+StreamingToolExecutor.partition()
+        │
+   ┌────┴────┐
+   ▼         ▼
+parallel   serial
+ tools      tools
+   │           │
+   └────┬──────┘
+        ▼
+  await all results
+        │
+        ▼
+   tool_results[] → appended to messages[]
+```
+
+## autoCompact()
+
+`autoCompact()` triggers when the accumulated token count in `messages[]` exceeds the configured threshold. It:
+
+1. Calls `getMessagesAfterCompactBoundary()` to split history into old and recent
+2. Sends the older messages to a separate Claude API call for summarization
+3. Replaces them with `[summary] + [compact_boundary] + [recent messages]`
+
+The compact boundary is persisted in the JSONL session log as a `system/compact_boundary` entry, so it survives session resume.
+
+## runTools()
+
+`runTools()` handles tool orchestration after `StreamingToolExecutor` returns results. It:
+
+- Appends each `tool_result` block to `messages[]`
+- Calls `recordTranscript()` for each result (fire-and-forget for assistant messages)
+- Handles `SDKPermissionDenial` for denied tools
+- Detects the `SYNTHETIC_OUTPUT_TOOL_NAME` sentinel for structured output
+
+## SDKMessage Types
+
+`submitMessage` yields five distinct message shapes, all discriminated by `type`:
+
+```typescript
+// src/entrypoints/agentSdkTypes.ts
+
+// Replays the original user message at the start of the stream
+type SDKUserMessageReplay = {
+  type: 'user'
+  message: MessageParam
+}
+
+// Emitted when a tool call is denied by the permission system
+type SDKPermissionDenial = {
+  type: 'permission_denial'
+  tool: string
+  reason: string
+}
+
+// Marks a context compaction boundary in the stream
+type SDKCompactBoundaryMessage = {
+  type: 'compact_boundary'
+  summary: string
+}
+
+// Streaming status updates (progress, thinking, etc.)
+type SDKStatus = {
+  type: 'status'
+  value: string
+}
+
+// Final result message with usage and cost info
+type SDKMessage =
+  | SDKUserMessageReplay
+  | SDKPermissionDenial
+  | SDKCompactBoundaryMessage
+  | SDKStatus
+  | AssistantMessage  // final text content
+```
+
+## AsyncGenerator Streaming Chain
+
+The streaming chain is end-to-end: the Claude API streams `content_block_delta` events, `query.ts` yields them as `SDKMessage` values, and `QueryEngine.ts` re-yields them to the consumer. No buffering occurs at the engine layer.
+
+```
+Claude API (SSE)
+     │  content_block_delta events
+     ▼
+query() in query.ts
+     │  yield SDKMessage
+     ▼
+submitMessage() in QueryEngine.ts
+     │  yield SDKMessage
+     ▼
+Consumer (for await ... of submitMessage())
+```
+
+## Using QueryEngine in Headless/SDK Mode
+
+```typescript
+import { QueryEngine } from '@anthropic-ai/claude-code'
+
+const engine = new QueryEngine({
+  permissionMode: 'default',
+  // ...options
+})
+
+for await (const message of engine.submitMessage('Refactor this function')) {
+  if (message.type === 'status') {
+    process.stdout.write(message.value)
+  } else if (message.type === 'assistant') {
+    console.log(message.content)
+  } else if (message.type === 'permission_denial') {
+    console.warn(`Tool denied: ${message.tool} — ${message.reason}`)
+  }
+}
+```
+
+<Info>
+  In headless/SDK mode there is no interactive permission prompt. Tool permission decisions are driven entirely by the `permissionMode` option and any `alwaysAllow`/`alwaysDeny` rules configured in `settings.json`.
+</Info>

@@ -1,0 +1,129 @@
+{
+  "projectType": "cli-tool",
+  "projectName": "Claude Code",
+  "projectDescription": "Claude Code v2.1.88 is Anthropic's AI-powered coding assistant CLI that embeds an agentic loop with 40+ built-in tools, 80+ slash commands, MCP integration, multi-agent orchestration, and permission-based sandboxing for autonomous software development tasks.",
+  "theme": "luma",
+  "primaryColor": "#7c7c7c",
+  "lightColor": "#0a0a0a",
+  "darkColor": "#c7c7c7",
+  "navigation": {
+    "tabs": [
+      {
+        "tab": "Documentation",
+        "groups": [
+          {
+            "group": "Get Started",
+            "pages": [
+              "introduction",
+              "quickstart",
+              "installation"
+            ]
+          },
+          {
+            "group": "Core Concepts",
+            "pages": [
+              "concepts/agent-loop",
+              "concepts/tool-system",
+              "concepts/permission-model",
+              "concepts/context-management"
+            ]
+          },
+          {
+            "group": "Architecture",
+            "pages": [
+              "architecture/overview",
+              "architecture/query-engine",
+              "architecture/multi-agent",
+              "architecture/mcp-integration",
+              "architecture/session-persistence"
+            ]
+          },
+          {
+            "group": "Configuration",
+            "pages": [
+              "configuration/settings",
+              "configuration/environment-variables",
+              "configuration/hooks",
+              "configuration/memory-system"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "Reference",
+        "groups": [
+          {
+            "group": "Built-in Tools",
+            "pages": [
+              "reference/tools/file-operations",
+              "reference/tools/search-tools",
+              "reference/tools/execution-tools",
+              "reference/tools/agent-tools",
+              "reference/tools/mcp-tools"
+            ]
+          },
+          {
+            "group": "Slash Commands",
+            "pages": [
+              "reference/commands/overview",
+              "reference/commands/session-management",
+              "reference/commands/configuration-commands",
+              "reference/commands/mcp-commands"
+            ]
+          },
+          {
+            "group": "Analysis Reports",
+            "pages": [
+              "reference/analysis/telemetry-privacy",
+              "reference/analysis/hidden-features",
+              "reference/analysis/remote-control",
+              "reference/analysis/future-roadmap"
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "keyFeatures": [
+    "Agentic loop with streaming Claude API integration and tool execution",
+    "40+ built-in tools for file operations, bash execution, web search, and more",
+    "80+ slash commands for session management, configuration, and workflow control",
+    "MCP (Model Context Protocol) server integration with OAuth 2.0 support",
+    "Multi-agent orchestration with fork, worktree, and in-process teammate modes",
+    "Three-layer context compression: autoCompact, snipCompact, contextCollapse",
+    "Permission system with pre-tool hooks, always-allow/deny rules, and interactive prompts",
+    "CLAUDE.md memory system for project-level context injection",
+    "Session persistence via append-only JSONL transcripts with resume support",
+    "Feature flag system (DCE via Bun compile-time intrinsics)",
+    "React/Ink terminal UI with streaming rendering",
+    "GrowthBook A/B experiment runtime and Datadog/1P telemetry analytics"
+  ],
+  "publicApiSurface": [
+    "claude [prompt] — non-interactive one-shot query mode",
+    "claude --continue — resume last session in current directory",
+    "claude --resume <id> — resume specific session by ID",
+    "claude --model <model> — override active model",
+    "claude --dangerously-skip-permissions — bypass permission prompts (headless/CI)",
+    "claude --print / -p — print output only, no interactive REPL",
+    "QueryEngine.submitMessage(prompt) — SDK headless agent loop AsyncGenerator",
+    "/compact — manually trigger context compression",
+    "/config — view and modify settings.json",
+    "/mcp — manage MCP server connections",
+    "/memory — manage CLAUDE.md project memory",
+    "/plan — enter plan mode (list steps before executing)",
+    "/resume — resume a previous session",
+    "/clear — clear conversation context",
+    "BashTool — execute shell commands with sandboxing",
+    "FileReadTool — read files, PDFs, and images",
+    "FileEditTool — string-replace file editing",
+    "FileWriteTool — full file creation/overwrite",
+    "GlobTool — file pattern matching",
+    "GrepTool — ripgrep-based content search",
+    "WebFetchTool — HTTP page fetching",
+    "WebSearchTool — web search queries",
+    "AgentTool — spawn sub-agents (fork/worktree/remote)",
+    "MCPTool — call MCP server tools",
+    "TodoWriteTool — write structured task lists",
+    "TaskCreateTool / TaskUpdateTool / TaskGetTool — persistent task management"
+  ]
+}

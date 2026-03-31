@@ -1,0 +1,207 @@
+---
+title: "Settings"
+description: "Configuring Claude Code via settings.json"
+---
+
+Claude Code reads configuration from `settings.json` files at two levels: a global user file and a project-local file. Settings cascade from global → project → local, with CLI flags taking highest precedence.
+
+## File locations
+
+| Scope | Path | Purpose |
+|-------|------|---------|
+| Global (user) | `~/.claude/settings.json` | Applies to all projects |
+| Project | `.claude/settings.json` | Committed to the repo; shared with team |
+| Local | `.claude/settings.local.json` | Machine-local overrides; gitignore this |
+| Managed (enterprise) | Injected by MDM/policy | Highest-trust; set by admins |
+
+<Note>
+Project settings (`.claude/settings.json`) are committed to source control and shared with your team. Use `.claude/settings.local.json` for personal or machine-specific overrides that should not be committed.
+</Note>
+
+## Precedence order
+
+```
+CLI flags > Local settings > Project settings > User settings > Managed/policy settings
+```
+
+When a field appears in multiple files, the higher-precedence value wins. Arrays (such as permission rules) merge across sources rather than override.
+
+## Settings schema
+
+The full schema is defined in [`src/utils/settings/types.ts`](https://github.com/sanbuphy/claude-code-source-code/blob/main/src/utils/settings/types.ts). All fields are optional.
+
+### Permissions
+
+```json
+"permissions": {
+  "allow": ["Bash(git *)", "Read(*.ts)"],
+  "deny": ["Bash(rm -rf *)"],
+  "ask": ["Write(*)"],
+  "defaultMode": "default",
+  "disableBypassPermissionsMode": "disable",
+  "additionalDirectories": ["/mnt/shared"]
+}
+```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `permissions.allow` | `string[]` | Permission rules auto-approved without prompting |
+| `permissions.deny` | `string[]` | Permission rules always rejected |
+| `permissions.ask` | `string[]` | Permission rules that always prompt for confirmation |
+| `permissions.defaultMode` | `string` | Default permission mode when access is needed |
+| `permissions.disableBypassPermissionsMode` | `"disable"` | Prevent bypassing permission prompts |
+| `permissions.additionalDirectories` | `string[]` | Extra directories included in the permission scope |
+
+### Model
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `model` | `string` | Override the default model (e.g. `"claude-sonnet-4-6"`) |
+| `availableModels` | `string[]` | Enterprise allowlist of selectable models |
+| `modelOverrides` | `Record<string, string>` | Map Anthropic model IDs to provider-specific IDs (Bedrock ARNs, etc.) |
+| `advisorModel` | `string` | Model used for the server-side advisor tool |
+
+### Hooks
+
+```json
+"hooks": {
+  "PreToolUse": [
+    {
+      "matcher": "Bash",
+      "hooks": [{ "type": "command", "command": "echo 'about to run bash'" }]
+    }
+  ]
+}
+```
+
+See [Hooks](/configuration/hooks) for the full hooks reference.
+
+### MCP servers
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `enableAllProjectMcpServers` | `boolean` | Auto-approve all MCP servers from `.mcp.json` |
+| `enabledMcpjsonServers` | `string[]` | Approved server names from `.mcp.json` |
+| `disabledMcpjsonServers` | `string[]` | Rejected server names from `.mcp.json` |
+| `allowedMcpServers` | `object[]` | Enterprise allowlist — entries match by `serverName`, `serverCommand`, or `serverUrl` |
+| `deniedMcpServers` | `object[]` | Enterprise denylist — takes precedence over the allowlist |
+
+### Memory
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `autoMemoryEnabled` | `boolean` | Enable or disable auto-memory for this project |
+| `autoMemoryDirectory` | `string` | Custom path for auto-memory storage; supports `~/` prefix |
+| `autoDreamEnabled` | `boolean` | Enable background memory consolidation |
+| `claudeMdExcludes` | `string[]` | Glob patterns for CLAUDE.md files to skip loading |
+
+### Session and display
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `cleanupPeriodDays` | `number` | Days to retain chat transcripts (default: 30; `0` disables persistence) |
+| `language` | `string` | Preferred language for responses and voice dictation |
+| `outputStyle` | `string` | Controls output style for assistant responses |
+| `defaultShell` | `"bash" \| "powershell"` | Shell used for `!` input-box commands |
+| `syntaxHighlightingDisabled` | `boolean` | Disable syntax highlighting in diffs |
+| `prefersReducedMotion` | `boolean` | Reduce animations for accessibility |
+| `spinnerTipsEnabled` | `boolean` | Show tips in the spinner |
+
+### Authentication helpers
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `apiKeyHelper` | `string` | Path to script that outputs authentication values |
+| `awsCredentialExport` | `string` | Path to script that exports AWS credentials |
+| `awsAuthRefresh` | `string` | Path to script that refreshes AWS authentication |
+| `gcpAuthRefresh` | `string` | Command to refresh GCP authentication |
+| `otelHeadersHelper` | `string` | Path to script that outputs OpenTelemetry headers |
+
+### Worktrees
+
+```json
+"worktree": {
+  "symlinkDirectories": ["node_modules", ".cache"],
+  "sparsePaths": ["src/", "packages/core/"]
+}
+```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `worktree.symlinkDirectories` | `string[]` | Directories to symlink from the main repo into worktrees |
+| `worktree.sparsePaths` | `string[]` | Directories for git sparse-checkout when creating worktrees |
+
+### Attribution
+
+```json
+"attribution": {
+  "commit": "Co-authored-by: Claude <noreply@anthropic.com>",
+  "pr": ""
+}
+```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `attribution.commit` | `string` | Attribution trailer for git commits; empty string hides it |
+| `attribution.pr` | `string` | Attribution text for pull request descriptions; empty string hides it |
+| `includeGitInstructions` | `boolean` | Include built-in commit/PR workflow instructions in the system prompt (default: `true`) |
+
+### Enterprise controls
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `allowManagedHooksOnly` | `boolean` | Only hooks from managed settings run; user/project/local hooks are ignored |
+| `allowManagedPermissionRulesOnly` | `boolean` | Only permission rules from managed settings are respected |
+| `allowManagedMcpServersOnly` | `boolean` | Only the admin-defined MCP allowlist applies |
+| `strictPluginOnlyCustomization` | `boolean \| string[]` | Restrict customization surfaces to plugins only |
+| `forceLoginMethod` | `"claudeai" \| "console"` | Force a specific login method |
+| `forceLoginOrgUUID` | `string` | Organization UUID for OAuth login |
+| `allowedHttpHookUrls` | `string[]` | Allowlist of URL patterns HTTP hooks may target |
+| `disableAllHooks` | `boolean` | Disable all hooks and status line execution |
+
+## Example settings.json
+
+```json
+{
+  "$schema": "https://claude.ai/schema/settings.json",
+  "model": "claude-sonnet-4-6",
+  "permissions": {
+    "allow": [
+      "Bash(git *)",
+      "Bash(npm run *)",
+      "Read(**/*.ts)"
+    ],
+    "deny": [
+      "Bash(rm -rf *)"
+    ],
+    "additionalDirectories": ["/mnt/shared/data"]
+  },
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "logger -t claude \"PreToolUse: Bash\""
+          }
+        ]
+      }
+    ]
+  },
+  "cleanupPeriodDays": 14,
+  "language": "english",
+  "attribution": {
+    "commit": "Co-authored-by: Claude <noreply@anthropic.com>"
+  },
+  "worktree": {
+    "symlinkDirectories": ["node_modules"]
+  }
+}
+```
+
+## /config slash command
+
+Run `/config` inside Claude Code to open the interactive settings editor. It provides a UI for viewing and modifying your current settings without editing JSON directly.
+
+The editor shows which settings file each value comes from (User, Project, or Local) and lets you add permission rules and toggle options interactively.

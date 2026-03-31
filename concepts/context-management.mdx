@@ -1,0 +1,143 @@
+---
+title: "Context Management"
+description: "How Claude Code keeps long sessions within the model's context window using three compression strategies."
+---
+
+Every model has a finite context window. In a long coding session the conversation history — messages, tool inputs, tool outputs — grows continuously until it hits that limit. Claude Code handles this automatically with a layered compression system in `src/services/compact/`.
+
+## Context window layout
+
+At any point in a session, the context window is structured as follows:
+
+```
+┌─────────────────────────────────────────────────────┐
+│  System Prompt (tools, permissions, CLAUDE.md)      │
+│  ══════════════════════════════════════════════      │
+│                                                     │
+│  Conversation History                               │
+│  ┌─────────────────────────────────────────────┐    │
+│  │ [compacted summary of older messages]        │    │
+│  │ ═══════════════════════════════════════════  │    │
+│  │ [compact_boundary marker]                    │    │
+│  │ ─────────────────────────────────────────── │    │
+│  │ [recent messages — full fidelity]            │    │
+│  │ user → assistant → tool_use → tool_result   │    │
+│  └─────────────────────────────────────────────┘    │
+│                                                     │
+│  Current Turn (user + assistant response)            │
+└─────────────────────────────────────────────────────┘
+```
+
+The `compact_boundary` marker is a special `system` message with `subtype: "compact_boundary"` written into the JSONL transcript. It divides the conversation into two regions:
+
+- **Before the boundary** — a summary produced by a previous compaction call. Full fidelity is lost but the key facts are preserved.
+- **After the boundary** — recent messages at full fidelity. These have not been compressed.
+
+When Claude Code resumes a session, `getMessagesAfterCompactBoundary()` reads the transcript and reconstructs this two-region layout.
+
+## Three compression strategies
+
+| Strategy | Trigger | What it does | Feature flag |
+|----------|---------|-------------|-------------|
+| **`autoCompact`** | Token count exceeds threshold during `normalizeMessagesForAPI()` | Sends all messages before the boundary to the Claude API with a summarization prompt. Replaces them with a compact summary and writes a new `compact_boundary` to the transcript. | Always available |
+| **`snipCompact`** | Called alongside `autoCompact` when enabled | Removes "zombie" messages — stale tool results, orphaned progress markers, and superseded file reads that are no longer referenced. Reduces noise before summarization. | `HISTORY_SNIP` feature flag |
+| **`contextCollapse`** | Called on demand or by threshold | Restructures the entire context for maximum efficiency — reordering, deduplicating, and collapsing repetitive tool exchange patterns. More aggressive than `autoCompact`. | `CONTEXT_COLLAPSE` feature flag |
+
+<Note>
+`snipCompact` and `contextCollapse` are feature-gated and not present in the published npm package. Only `autoCompact` is available in the standard build.
+</Note>
+
+## Compaction flow
+
+```
+messages[] ──> getMessagesAfterCompactBoundary()
+                    │
+                    ├── older messages (before boundary)
+                    │       │
+                    │       ▼
+                    │   Claude API (summarize)
+                    │       │
+                    │       ▼
+                    │   compact summary text
+                    │
+                    └── recent messages (after boundary, unchanged)
+                            │
+                            ▼
+              [summary] + [compact_boundary] + [recent messages]
+                            │
+                            ▼
+              recordTranscript() ──> appended to JSONL
+```
+
+The compaction call is a full Claude API request. It uses a dedicated summarization prompt that instructs the model to preserve task context, key decisions, file paths modified, and any open threads — enough for the session to continue coherently.
+
+## The /compact slash command
+
+You can trigger compaction manually at any time using the `/compact` slash command:
+
+```
+/compact
+```
+
+This runs `autoCompact` immediately, regardless of the current token count. Use it proactively before starting a large task if you want to preserve context headroom.
+
+You can also pass a custom focus instruction to guide the summary:
+
+```
+/compact Focus on the authentication refactor we just completed
+```
+
+The instruction is appended to the summarization prompt so the model knows what to preserve in detail.
+
+## CLAUDE.md memory files
+
+`CLAUDE.md` files are a separate mechanism for injecting persistent knowledge into the system prompt. They are **not** part of the conversation history and are not affected by compaction.
+
+Claude Code discovers `CLAUDE.md` files by walking up the directory tree from the current working directory. Files are loaded **lazily** — only when the agent navigates to a directory that contains one. This keeps the system prompt small at startup.
+
+```
+project/
+├── CLAUDE.md          # loaded when working in project/
+├── src/
+│   └── CLAUDE.md      # loaded when working in project/src/
+└── tests/
+    └── CLAUDE.md      # loaded when working in project/tests/
+```
+
+The `nestedMemoryAttachmentTriggers` and `loadedNestedMemoryPaths` sets on `ToolUseContext` track which `CLAUDE.md` paths have already been injected this session. This prevents the same file from being re-injected dozens of times in busy sessions where the LRU file state cache evicts entries.
+
+## Session persistence and resume
+
+Every message — including `compact_boundary` markers — is appended to the session JSONL file as it is produced:
+
+```
+~/.claude/projects/<project-hash>/sessions/<session-id>.jsonl
+```
+
+When you resume a session with `--continue` or `--resume <id>`, Claude Code:
+
+1. Reads the JSONL file
+2. Locates the most recent `compact_boundary` marker
+3. Reconstructs `messages[]` as `[summary_message, compact_boundary, ...recent_messages]`
+4. Resumes the agent loop from that state
+
+This means compacted sessions resume just as efficiently as fresh sessions — only the recent full-fidelity messages are sent to the API on the first turn.
+
+```bash
+# Resume the most recent session in the current directory
+node cli.js --continue
+
+# Resume a specific session by its ID
+node cli.js --resume <session-id>
+```
+
+## Transcript persistence strategy
+
+Different message types use different write strategies to balance crash safety against performance:
+
+| Message type | Write strategy | Reason |
+|-------------|---------------|--------|
+| User messages | `await` (blocking) | Crash recovery — must survive a process kill |
+| Assistant messages | Fire-and-forget (ordered queue) | High frequency; ordering is preserved by the queue |
+| Progress messages | Inline write (deduped on next query) | Transient; only latest state matters |
+| Compact boundary | `await` (blocking) | Structural — loss would corrupt resume |

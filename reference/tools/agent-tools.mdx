@@ -1,0 +1,439 @@
+---
+title: "Agent & Task Tools"
+description: "Tools for spawning sub-agents, managing multi-agent teams, tracking tasks, and controlling plan mode and worktree isolation."
+---
+
+Claude Code's multi-agent subsystem is exposed through a family of related tools. At the core is **AgentTool** for spawning sub-agents; surrounding it are tools for agent-to-agent communication, team management, structured task tracking, plan mode, and git worktree isolation.
+
+<CardGroup cols={2}>
+  <Card title="AgentTool" icon="robot">
+    Spawn a sub-agent to work on a parallel or specialised task
+  </Card>
+  <Card title="SendMessageTool" icon="paper-plane">
+    Send messages between agents and teammates
+  </Card>
+  <Card title="Team tools" icon="people-group">
+    Create and delete multi-agent teams
+  </Card>
+  <Card title="Task tools" icon="list-check">
+    Structured task lifecycle management (TodoV2)
+  </Card>
+  <Card title="TodoWriteTool" icon="square-check">
+    Simple session-scoped to-do list
+  </Card>
+  <Card title="Plan mode" icon="diagram-project">
+    Enter / exit plan mode for design-before-code workflows
+  </Card>
+  <Card title="Worktree tools" icon="code-branch">
+    Git worktree isolation for safe exploratory changes
+  </Card>
+</CardGroup>
+
+---
+
+## AgentTool
+
+Spawns a sub-agent (a full Claude loop) to carry out a task independently. Sub-agents inherit the parent's tool set, permission context, and working directory by default, but can be given their own isolation boundary.
+
+**Tool name:** `Agent`  
+**Concurrency-safe:** no (each sub-agent runs asynchronously but shares session state)  
+**Destructive:** depends on the task
+
+### Parameters
+
+<ParamField path="prompt" type="string" required>
+  The task for the sub-agent to perform. Be explicit and self-contained — the sub-agent does not share the parent's conversation history.
+</ParamField>
+
+<ParamField path="description" type="string" required>
+  A short (3–5 word) description of the task shown in the UI.
+</ParamField>
+
+<ParamField path="subagent_type" type="string">
+  The name of a specialised agent definition to use (loaded from `.claude/agents/` directories). Omit to use the general-purpose agent.
+</ParamField>
+
+<ParamField path="model" type="string">
+  Optional model override: `"sonnet"`, `"opus"`, or `"haiku"`. Takes precedence over the agent definition's model setting and the parent's model. If omitted, inherits the parent's model.
+</ParamField>
+
+<ParamField path="run_in_background" type="boolean" default="false">
+  Run the sub-agent as a background task. The parent receives a notification when the agent completes. Only available when background tasks are not disabled.
+</ParamField>
+
+<ParamField path="name" type="string">
+  Human-readable name for the spawned agent. Makes the agent addressable via `SendMessage({ to: name })` while it is running.
+</ParamField>
+
+<ParamField path="team_name" type="string">
+  Team name for spawning as part of a multi-agent team. Uses the current team context if omitted.
+</ParamField>
+
+<ParamField path="mode" type="string">
+  Permission mode for a spawned teammate, e.g. `"plan"` to require plan-mode approval before destructive actions.
+</ParamField>
+
+<ParamField path="isolation" type="string">
+  Isolation mode:
+  - `"worktree"` — creates a temporary git worktree so the agent works on an isolated copy of the repository. Changes must be merged back explicitly.
+</ParamField>
+
+<ParamField path="cwd" type="string">
+  Absolute path to run the agent in. Overrides the working directory for all filesystem and shell operations within the sub-agent. Mutually exclusive with `isolation: "worktree"`.
+</ParamField>
+
+### When to use
+
+- **Parallelism** — run independent tasks (e.g. "write tests for module A" and "write tests for module B") concurrently.
+- **Specialisation** — delegate to a domain-specific agent definition (linter, code reviewer, documentation writer).
+- **Isolation** — use `isolation: "worktree"` to let a sub-agent experiment freely without risking the main working tree.
+
+### Usage example
+
+```json
+{
+  "tool": "Agent",
+  "input": {
+    "description": "Write unit tests",
+    "prompt": "Write comprehensive unit tests for all exported functions in src/utils/date.ts. Use Vitest. Place tests in src/utils/__tests__/date.test.ts.",
+    "subagent_type": "test-writer"
+  }
+}
+```
+
+---
+
+## SendMessageTool
+
+Sends a message from the current agent to another agent or teammate by name. Supports point-to-point messages, broadcasts (`"*"`), and structured protocol messages (shutdown requests/responses, plan approval responses).
+
+**Tool name:** `SendMessage`  
+**Concurrency-safe:** no  
+**Destructive:** no
+
+### Parameters
+
+<ParamField path="to" type="string" required>
+  Recipient address. Options:
+  - A teammate name (e.g. `"researcher"`)
+  - `"*"` to broadcast to all teammates
+</ParamField>
+
+<ParamField path="message" type="string | object" required>
+  The message payload. Either a plain-text string or a structured message object with a `type` discriminator:
+  - `{ type: "shutdown_request", reason?: string }` — request a teammate to shut down
+  - `{ type: "shutdown_response", request_id, approve, reason? }` — respond to a shutdown request
+  - `{ type: "plan_approval_response", request_id, approve, feedback? }` — respond to a plan approval request
+</ParamField>
+
+<ParamField path="summary" type="string">
+  A 5–10 word preview shown in the UI. Required when `message` is a plain string.
+</ParamField>
+
+### Usage example
+
+```json
+{
+  "tool": "SendMessage",
+  "input": {
+    "to": "test-runner",
+    "summary": "All changes committed, run tests",
+    "message": "The implementation is complete. Please run the full test suite and report results."
+  }
+}
+```
+
+---
+
+## Team Tools
+
+Team tools manage the lifecycle of multi-agent teams. A **team** is a named group of agents with a designated lead.
+
+### TeamCreateTool
+
+Creates a new team and registers the current agent as its lead.
+
+**Tool name:** `TeamCreate`
+
+#### Parameters
+
+<ParamField path="team_name" type="string" required>
+  Name for the new team.
+</ParamField>
+
+<ParamField path="description" type="string">
+  Optional human-readable description of the team's purpose.
+</ParamField>
+
+<ParamField path="agent_type" type="string">
+  Role/type of the team lead (e.g. `"researcher"`, `"test-runner"`). Used for team file metadata and inter-agent coordination.
+</ParamField>
+
+#### Return value
+
+<ResponseField name="team_name" type="string">The resolved team name (may differ if the provided name was already taken).</ResponseField>
+<ResponseField name="team_file_path" type="string">Path to the team configuration file.</ResponseField>
+<ResponseField name="lead_agent_id" type="string">Agent ID of the team lead.</ResponseField>
+
+### TeamDeleteTool
+
+Disbands an existing team and cleans up its associated state.
+
+**Tool name:** `TeamDelete`
+
+#### Parameters
+
+<ParamField path="team_name" type="string" required>
+  Name of the team to delete.
+</ParamField>
+
+---
+
+## Task Tools (TodoV2)
+
+Task tools implement a structured task lifecycle with statuses, dependencies, and ownership. They replace the simpler `TodoWriteTool` when the `TodoV2` feature is enabled.
+
+<Tabs>
+  <Tab title="TaskCreateTool">
+    Creates a new task in the shared task list.
+
+    **Tool name:** `TaskCreate`
+
+    #### Parameters
+
+    <ParamField path="subject" type="string" required>
+      Brief title for the task.
+    </ParamField>
+
+    <ParamField path="description" type="string" required>
+      What needs to be done.
+    </ParamField>
+
+    <ParamField path="activeForm" type="string">
+      Present-continuous form shown in the spinner when the task is `in_progress`, e.g. `"Running tests"`.
+    </ParamField>
+
+    <ParamField path="metadata" type="object">
+      Arbitrary key-value metadata to attach to the task.
+    </ParamField>
+
+    Returns `{ task: { id, subject } }`.
+  </Tab>
+  <Tab title="TaskUpdateTool">
+    Updates an existing task's status, subject, description, owner, dependencies, or metadata.
+
+    **Tool name:** `TaskUpdate`
+
+    #### Parameters
+
+    <ParamField path="taskId" type="string" required>
+      ID of the task to update.
+    </ParamField>
+
+    <ParamField path="status" type="string">
+      New status. One of `"pending"`, `"in_progress"`, `"completed"`, `"blocked"`, or `"deleted"` (removes the task).
+    </ParamField>
+
+    <ParamField path="subject" type="string">
+      New task title.
+    </ParamField>
+
+    <ParamField path="description" type="string">
+      New task description.
+    </ParamField>
+
+    <ParamField path="activeForm" type="string">
+      Updated spinner label for `in_progress` state.
+    </ParamField>
+
+    <ParamField path="owner" type="string">
+      Agent name that owns this task.
+    </ParamField>
+
+    <ParamField path="addBlocks" type="string[]">
+      Task IDs that this task blocks (adds to dependency graph).
+    </ParamField>
+
+    <ParamField path="addBlockedBy" type="string[]">
+      Task IDs that block this task (adds to dependency graph).
+    </ParamField>
+
+    <ParamField path="metadata" type="object">
+      Metadata keys to merge. Set a key to `null` to delete it.
+    </ParamField>
+  </Tab>
+  <Tab title="TaskGetTool">
+    Retrieves a single task by ID.
+
+    **Tool name:** `TaskGet`
+
+    <ParamField path="taskId" type="string" required>
+      ID of the task to retrieve.
+    </ParamField>
+  </Tab>
+  <Tab title="TaskListTool">
+    Lists all tasks in the current session's task list, with optional status filtering.
+
+    **Tool name:** `TaskList`
+
+    <ParamField path="status" type="string">
+      Optional status filter: `"pending"`, `"in_progress"`, `"completed"`, `"blocked"`.
+    </ParamField>
+  </Tab>
+  <Tab title="TaskStopTool">
+    Stops a running background task (agent or shell task).
+
+    **Tool name:** `TaskStop`
+
+    <ParamField path="task_id" type="string" required>
+      ID of the task to stop.
+    </ParamField>
+  </Tab>
+  <Tab title="TaskOutputTool">
+    Reads output from a background task, optionally waiting for it to complete.
+
+    **Tool name:** `TaskOutput`
+
+    <ParamField path="task_id" type="string" required>
+      The task ID to get output from.
+    </ParamField>
+
+    <ParamField path="block" type="boolean" default="true">
+      Whether to wait for the task to complete before returning.
+    </ParamField>
+
+    <ParamField path="timeout" type="number" default="30000">
+      Maximum wait time in milliseconds (0–600 000).
+    </ParamField>
+
+    Returns `{ retrieval_status, task }` where `retrieval_status` is `"success"`, `"timeout"`, or `"not_ready"`.
+  </Tab>
+</Tabs>
+
+---
+
+## TodoWriteTool
+
+A simpler session-scoped to-do list used when TodoV2 is not enabled. Replaces the entire list atomically on each call.
+
+**Tool name:** `TodoWrite`  
+**Concurrency-safe:** yes  
+**Destructive:** no (replaces existing list; previous state can be reconstructed from the return value)
+
+### Parameters
+
+<ParamField path="todos" type="array" required>
+  The complete updated to-do list. Each item has:
+  - `id` — unique identifier
+  - `content` — task description
+  - `status` — `"pending"`, `"in_progress"`, or `"completed"`
+  - `priority` — `"high"`, `"medium"`, or `"low"`
+</ParamField>
+
+### Return value
+
+<ResponseField name="oldTodos" type="array">
+  The to-do list before the update.
+</ResponseField>
+
+<ResponseField name="newTodos" type="array">
+  The to-do list after the update. Empty when all items are `"completed"`.
+</ResponseField>
+
+### Usage example
+
+```json
+{
+  "tool": "TodoWrite",
+  "input": {
+    "todos": [
+      { "id": "1", "content": "Read existing tests", "status": "completed", "priority": "high" },
+      { "id": "2", "content": "Write new unit tests", "status": "in_progress", "priority": "high" },
+      { "id": "3", "content": "Update README", "status": "pending", "priority": "low" }
+    ]
+  }
+}
+```
+
+---
+
+## Plan Mode Tools
+
+Plan mode restricts Claude Code to read-only operations, forcing all proposed changes to be reviewed and approved before execution. It is intended for complex tasks that require exploration and design before coding.
+
+### EnterPlanModeTool
+
+Requests permission to enter plan mode. Claude Code switches the session's permission mode to `"plan"` and prompts the user for approval before any write or execute operation.
+
+**Tool name:** `exit_plan_mode` *(the tool that enters plan mode; the name reflects the user action that ends it)*
+
+Takes no parameters.
+
+Returns `{ message }` confirming plan mode was entered.
+
+<Info>
+  Plan mode is automatically exited when the user approves a proposed change. The session's permission mode is restored to its previous value.
+</Info>
+
+### ExitPlanModeTool
+
+Exits plan mode and returns to the previous permission level.
+
+**Tool name:** `exit_plan_mode`
+
+Takes no parameters.
+
+---
+
+## Worktree Tools
+
+Worktree tools provide in-session git worktree isolation. When active, all filesystem and shell operations within the session are redirected to a temporary git worktree branched off the current HEAD.
+
+### EnterWorktreeTool
+
+Creates a new git worktree and switches the current session into it.
+
+**Tool name:** `EnterWorktree`
+
+#### Parameters
+
+<ParamField path="name" type="string">
+  Optional name for the worktree. Each `/`-separated segment may contain letters, digits, dots, underscores, and dashes; maximum 64 characters total. A random name is generated if omitted.
+</ParamField>
+
+#### Return value
+
+<ResponseField name="worktreePath" type="string">
+  Absolute path to the created worktree.
+</ResponseField>
+
+<ResponseField name="worktreeBranch" type="string">
+  Branch checked out in the worktree (if applicable).
+</ResponseField>
+
+<ResponseField name="message" type="string">
+  Human-readable confirmation.
+</ResponseField>
+
+### ExitWorktreeTool
+
+Exits the current worktree and returns the session to the original working directory. The worktree is removed from disk.
+
+**Tool name:** `ExitWorktree`
+
+Takes no parameters.
+
+<Warning>
+  Exiting the worktree discards any uncommitted changes inside it. Commit or stash changes before calling ExitWorktreeTool if you want to preserve them.
+</Warning>
+
+### Usage example
+
+```json
+{
+  "tool": "EnterWorktree",
+  "input": {
+    "name": "feature/add-auth"
+  }
+}
+```

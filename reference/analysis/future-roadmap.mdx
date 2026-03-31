@@ -1,0 +1,216 @@
+---
+title: "Future Roadmap"
+description: "Unreleased features and future development plans found in Claude Code v2.1.88 source code."
+---
+
+<Info>
+  This page contains research findings derived from decompiled source code of `@anthropic-ai/claude-code` v2.1.88. These are features found in source but not yet publicly released. All timelines and details are inferred from code comments and structure — no official release dates are implied. All source code is the intellectual property of Anthropic.
+</Info>
+
+## Next Model: Numbat
+
+The most concrete evidence of an upcoming model launch in the v2.1.88 source:
+
+```typescript
+// src/constants/prompts.ts:402
+// @[MODEL LAUNCH]: Remove this section when we launch numbat.
+```
+
+**Numbat** (袋食蚁兽) is confirmed as the codename for a future model. The comment indicates the output efficiency section will be revised at launch, suggesting Numbat may have improved native output control.
+
+### In-Development Version Numbers
+
+The undercover mode instructions explicitly list version numbers to suppress, revealing models in active development:
+
+```typescript
+// src/utils/undercover.ts:49
+- Unreleased model version numbers (e.g., opus-4-7, sonnet-4-8)
+```
+
+**Opus 4.7** and **Sonnet 4.8** are in development.
+
+### Codename Evolution Chain
+
+```
+Fennec (耳廓狐)  →  Opus 4.6  →  [Numbat?]
+Capybara (水豚)  →  Sonnet v8  →  [?]
+Tengu (天狗)     →  telemetry/product prefix
+```
+
+The Fennec-to-Opus migration is documented with a dedicated migration script:
+
+```typescript
+// src/migrations/migrateFennecToOpus.ts:7-11
+// fennec-latest           → opus
+// fennec-latest[1m]       → opus[1m]
+// fennec-fast-latest      → opus[1m] + fast mode
+```
+
+### Model Launch Checklist
+
+The codebase contains 20+ `@[MODEL LAUNCH]` markers, documenting what must be updated at each launch:
+
+- Default model names (`FRONTIER_MODEL_NAME`)
+- Model family IDs
+- Knowledge cutoff dates
+- Pricing tables
+- Context window configurations
+- Thinking mode support flags
+- Display name mappings
+- Migration scripts
+
+---
+
+## KAIROS — Autonomous Agent Mode
+
+<Warning>
+  KAIROS is the largest unreleased feature found in the source. It transforms Claude Code from a reactive assistant into an always-on, proactive autonomous agent that can act without user prompting.
+</Warning>
+
+### System Prompt (excerpts)
+
+Source: `src/constants/prompts.ts:860-913`
+
+```
+You are running autonomously.
+You will receive <tick> prompts that keep you alive between turns.
+If you have nothing useful to do, call SleepTool.
+Bias toward action — read files, make changes, commit without asking.
+
+## Terminal focus
+- Unfocused: The user is away. Lean heavily into autonomous action.
+- Focused: The user is watching. Be more collaborative.
+```
+
+### KAIROS Tool Set
+
+| Tool | Feature Flag | Purpose |
+|---|---|---|
+| `SleepTool` | `KAIROS` / `PROACTIVE` | Control pacing between autonomous actions |
+| `SendUserFileTool` | `KAIROS` | Proactively send files to users |
+| `PushNotificationTool` | `KAIROS` / `KAIROS_PUSH_NOTIFICATION` | Push notifications to user devices |
+| `SubscribePRTool` | `KAIROS_GITHUB_WEBHOOKS` | Subscribe to GitHub PR webhook events |
+| `BriefTool` | `KAIROS_BRIEF` | Proactive status updates |
+
+### Behavior Summary
+
+- Operates on `<tick>` heartbeat prompts between turns
+- Adjusts autonomy level based on terminal focus state (user present vs. away)
+- Can commit, push, and make code decisions independently
+- Sends proactive push notifications and status updates
+- Monitors GitHub PRs for changes via webhooks
+
+---
+
+## Voice Mode
+
+Push-to-talk voice input is fully implemented in v2.1.88 but gated behind the `VOICE_MODE` feature flag.
+
+```typescript
+// src/voice/voiceModeEnabled.ts
+// Connects to Anthropic's voice_stream WebSocket endpoint
+// Uses conversation_engine backed models for speech-to-text
+// Hold-to-talk: hold keybinding to record, release to submit
+```
+
+<Info>
+  Voice mode uses mTLS for WebSocket connections to Anthropic's `voice_stream` endpoint. It is restricted to OAuth users only — API key, Bedrock, and Vertex configurations are not supported.
+</Info>
+
+Key properties:
+- **Interaction model**: Hold-to-talk (hold key to record, release to submit)
+- **Authentication**: OAuth only (no API key / Bedrock / Vertex)
+- **Transport**: mTLS WebSocket
+- **Kill switch**: `tengu_amber_quartz_disabled`
+
+---
+
+## Unreleased Tools
+
+Tools found in source but stripped from the published bundle via dead-code elimination (DCE):
+
+| Tool | Feature Flag | Description |
+|---|---|---|
+| `WebBrowserTool` | `WEB_BROWSER_TOOL` | Built-in browser automation (internal codename: bagel) |
+| `TerminalCaptureTool` | `TERMINAL_PANEL` | Terminal panel capture and monitoring |
+| `WorkflowTool` | `WORKFLOW_SCRIPTS` | Execute predefined workflow scripts |
+| `MonitorTool` | `MONITOR_TOOL` | MCP server / process monitoring |
+| `SnipTool` | `HISTORY_SNIP` | Conversation history snipping and truncation |
+| `ListPeersTool` | `UDS_INBOX` | Unix domain socket peer discovery |
+| `RemoteTriggerTool` | `AGENT_TRIGGERS_REMOTE` | Remote agent triggering |
+| `TungstenTool` | `ant` (internal) | Internal performance monitoring panel |
+| `VerifyPlanExecutionTool` | `CLAUDE_CODE_VERIFY_PLAN` | Plan execution verification |
+| `OverflowTestTool` | `OVERFLOW_TEST_TOOL` | Context overflow testing |
+| `SubscribePRTool` | `KAIROS_GITHUB_WEBHOOKS` | GitHub PR webhook subscriptions |
+
+Source: `README.md` (Feature-Gated Tools section), `src/tools/`
+
+---
+
+## Coordinator Mode
+
+A multi-agent coordination system is partially implemented:
+
+```typescript
+// src/coordinator/coordinatorMode.ts
+// Feature flag: COORDINATOR_MODE
+```
+
+Enables coordinated task execution across multiple agents with shared state and inter-agent messaging. The worker agent module (`coordinator/workerAgent.js`) is internal-only and not present in the published npm package.
+
+---
+
+## Buddy System (Virtual Pets)
+
+A complete virtual pet companion system is implemented but not yet launched:
+
+<AccordionGroup>
+  <Accordion title="Buddy System details" icon="paw-print">
+    Source: `src/buddy/`
+
+    - **18 species**: duck, goose, blob, cat, dragon, octopus, owl, penguin, turtle, snail, ghost, axolotl, capybara, cactus, robot, rabbit, mushroom, chonk
+    - **5 rarity tiers**: Common (60%), Uncommon (25%), Rare (10%), Epic (4%), Legendary (1%)
+    - **7 hats**: crown, tophat, propeller, halo, wizard, beanie, tinyduck
+    - **5 stats**: `DEBUGGING`, `PATIENCE`, `CHAOS`, `WISDOM`, `SNARK`
+    - **1% shiny chance**: Sparkle variant of any species
+    - **Deterministic generation**: Pet identity is derived from a hash of the user's ID
+
+    <Info>
+      The species name "capybara" collides with the model codename canary in `scripts/excluded-strings.txt`. The build system works around this by constructing the string at runtime via `String.fromCharCode()` to keep the literal out of the compiled bundle.
+    </Info>
+  </Accordion>
+</AccordionGroup>
+
+---
+
+## Dream Task
+
+Background memory consolidation is implemented as a sub-agent:
+
+```
+// src/tasks/DreamTask/
+// Auto-dreaming feature that works in the background
+// Controlled by 'tengu_onyx_plover' feature flag
+```
+
+When enabled, the AI autonomously processes and consolidates memories during idle time without user interaction.
+
+---
+
+## The Three Directions
+
+<CardGroup cols={3}>
+  <Card title="New Models" icon="brain">
+    **Numbat** is the next confirmed codename. **Opus 4.7** and **Sonnet 4.8** are explicitly listed as in-development version numbers to suppress in commit messages.
+  </Card>
+  <Card title="Autonomous Agent" icon="robot">
+    **KAIROS** mode enables unattended operation with `<tick>` heartbeats, proactive commits, push notifications, and GitHub PR monitoring — a shift from reactive assistant to background agent.
+  </Card>
+  <Card title="Multi-modal & Automation" icon="microphone">
+    **Voice input** is ready and gated. **Browser automation** (WebBrowserTool / codename "bagel") and **workflow scripting** are implemented and waiting on feature flag release.
+  </Card>
+</CardGroup>
+
+<Tip>
+  Claude Code is evolving from a coding assistant into an always-on autonomous development agent. The KAIROS system prompt's explicit instruction to *"bias toward action — read files, make changes, commit without asking"* when the user is away is the clearest signal of this direction.
+</Tip>

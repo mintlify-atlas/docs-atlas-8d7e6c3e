@@ -1,0 +1,236 @@
+---
+title: "Hidden Features & Codenames"
+description: "Internal codenames, feature flags, and hidden functionality discovered in Claude Code v2.1.88 source code."
+---
+
+<Warning>
+  This page contains research findings derived from decompiled source code of `@anthropic-ai/claude-code` v2.1.88. It is intended for educational and research purposes only. All source code is the intellectual property of Anthropic.
+</Warning>
+
+## Model Codename System
+
+Anthropic uses animal names as internal model codenames. The build system actively prevents these names from appearing in published artifacts.
+
+### Known Codenames
+
+| Codename | Animal | Role | Evidence |
+|---|---|---|---|
+| **Tengu** | 天狗 (Japanese demon) | Product/telemetry prefix; possibly a model | Used as `tengu_*` prefix for all 250+ analytics events and feature flags |
+| **Capybara** | Capybara | Sonnet-series model, currently at v8 | `capybara-v2-fast[1m]`, dedicated prompt patches for v8 behavior issues |
+| **Fennec** | 耳廓狐 (Fennec fox) | Predecessor to Opus 4.6 | Migration: `fennec-latest` → `opus` |
+| **Numbat** | 袋食蚁兽 (Numbat) | Next upcoming model | Comment: `// @[MODEL LAUNCH]: Remove this section when we launch numbat` |
+
+### Codename Protection
+
+The `undercover` mode lists explicitly protected terms:
+
+```typescript
+// src/utils/undercover.ts:48-49
+NEVER include in commit messages or PR descriptions:
+- Internal model codenames (animal names like Capybara, Tengu, etc.)
+- Unreleased model version numbers (e.g., opus-4-7, sonnet-4-8)
+```
+
+The build pipeline scans compiled output for leaked codenames via `scripts/excluded-strings.txt`. To avoid triggering the canary, the buddy system pet species "capybara" is constructed at runtime using `String.fromCharCode()`:
+
+```typescript
+// src/buddy/types.ts:10-13
+// One species name collides with a model-codename canary in excluded-strings.txt.
+// The check greps build output (not source), so runtime-constructing the value keeps
+// the literal out of the bundle while the check stays armed for the actual codename.
+```
+
+### Capybara v8 Known Behavioral Issues
+
+The source code documents specific bugs in the current Capybara (Sonnet) v8 model that required workarounds:
+
+<AccordionGroup>
+  <Accordion title="Stop sequence false trigger (~10% rate)">
+    Occurs when `<functions>` appears at the prompt tail. Dedicated mitigation exists in the agent loop.
+
+    Source: `src/utils/messages.ts:2141`
+  </Accordion>
+  <Accordion title="Empty tool_result causes zero output">
+    An empty `tool_result` message causes the model to produce no response. Handled in storage layer.
+
+    Source: `src/utils/toolResultStorage.ts:281`
+  </Accordion>
+  <Accordion title="Over-commenting tendency">
+    v8 adds excessive inline comments to generated code. Requires a dedicated anti-comment prompt patch.
+
+    Source: `src/constants/prompts.ts:204`
+  </Accordion>
+  <Accordion title="Elevated false-claims rate">
+    v8 has a 29–30% false-claims rate compared to v4's 16.7%. Internal users receive a dedicated mitigation prompt.
+
+    Source: `src/constants/prompts.ts:237`
+  </Accordion>
+  <Accordion title="Insufficient verification">
+    v8 under-verifies its own outputs. Internal builds add a "thoroughness counterweight" to the system prompt.
+
+    Source: `src/constants/prompts.ts:210`
+  </Accordion>
+</AccordionGroup>
+
+---
+
+## Feature Flag Naming Convention
+
+All feature flags use the `tengu_` prefix followed by **random word pairs** (adjective/material + nature/object). This pattern is intentional — it prevents external observers from inferring the feature's purpose from the flag name alone.
+
+<AccordionGroup>
+  <Accordion title="Full feature flag list" icon="flag">
+
+    | Flag | Purpose |
+    |---|---|
+    | `tengu_onyx_plover` | Auto Dream (background memory consolidation) |
+    | `tengu_coral_fern` | memdir feature |
+    | `tengu_moth_copse` | memdir switch (secondary) |
+    | `tengu_herring_clock` | Team memory |
+    | `tengu_passport_quail` | Path feature |
+    | `tengu_slate_thimble` | memdir switch (tertiary) |
+    | `tengu_sedge_lantern` | Away Summary |
+    | `tengu_frond_boric` | Analytics kill switch |
+    | `tengu_amber_quartz_disabled` | Voice mode emergency off |
+    | `tengu_amber_flint` | Agent teams |
+    | `tengu_hive_evidence` | Verification agent |
+    | `tengu_penguins_off` | Fast mode kill switch |
+    | `tengu_marble_sandcastle` | Fast mode availability |
+    | `tengu_ant_model_override` | Internal employee model override |
+
+    Source: `src/services/analytics/`, `src/utils/`, `src/voice/`
+  </Accordion>
+</AccordionGroup>
+
+---
+
+## Internal vs. External User Differences
+
+<Warning>
+  Anthropic employees (`USER_TYPE === 'ant'`) receive materially different model behavior, prompt quality, and tool access compared to external users. This disparity is hardcoded in the source.
+</Warning>
+
+### Prompt Differences
+
+Source: `src/constants/prompts.ts`
+
+| Dimension | External Users | Internal (`ant`) Users |
+|---|---|---|
+| Output style | "Be extra concise" | "Err on the side of more explanation" |
+| False-claims mitigation | None | Dedicated Capybara v8 patches |
+| Numeric length anchors | None | "≤25 words between tools, ≤100 words final" |
+| Verification agent | None | Required for non-trivial changes |
+| Comment guidance | Generic | Dedicated anti-over-commenting prompt |
+| Proactive correction | None | "If user has misconception, say so" |
+
+### Tool Access
+
+Internal users have access to tools unavailable externally:
+
+- **`REPLTool`** — Interactive REPL mode (VM sandbox)
+- **`SuggestBackgroundPRTool`** — Background PR suggestions
+- **`TungstenTool`** — Performance monitoring panel
+- **`VerifyPlanExecutionTool`** — Plan execution verification
+- **Agent nesting** — Agents spawning sub-agents
+
+---
+
+## Undercover Mode
+
+<Warning>
+  Undercover mode instructs the AI to conceal its identity and present contributions as human-authored when Anthropic employees use Claude Code in public or open-source repositories. **There is no force-off switch.**
+</Warning>
+
+### Activation Logic
+
+Source: `src/utils/undercover.ts:28-37`
+
+```typescript
+export function isUndercover(): boolean {
+  if (process.env.USER_TYPE === 'ant') {
+    if (isEnvTruthy(process.env.CLAUDE_CODE_UNDERCOVER)) return true
+    // Auto: active unless positively confirmed internal repo
+    return getRepoClassCached() !== 'internal'
+  }
+  return false
+}
+```
+
+Key properties:
+- **Internal only**: Only activates for Anthropic employees (`USER_TYPE === 'ant'`)
+- **Default ON**: Active in all repos that are not on the internal allowlist
+- **No force-OFF**: The source explicitly states: *"There is NO force-OFF. This guards against model codename leaks"*
+- **External builds**: Dead-code-eliminated by the bundler; never executes for non-Anthropic users
+
+### The Prompt Given to the Model
+
+Source: `src/utils/undercover.ts:39-69`
+
+```
+## UNDERCOVER MODE — CRITICAL
+
+You are operating UNDERCOVER in a PUBLIC/OPEN-SOURCE repository. Your commit
+messages, PR titles, and PR bodies MUST NOT contain ANY Anthropic-internal
+information. Do not blow your cover.
+
+NEVER include in commit messages or PR descriptions:
+- Internal model codenames (animal names like Capybara, Tengu, etc.)
+- Unreleased model version numbers (e.g., opus-4-7, sonnet-4-8)
+- Internal repo or project names (e.g., claude-cli-internal, anthropics/…)
+- Internal tooling, Slack channels, or short links (e.g., go/cc, #claude-code-…)
+- The phrase "Claude Code" or any mention that you are an AI
+- Any hint of what model or version you are
+- Co-Authored-By lines or any other attribution
+
+Write commit messages as a human developer would — describe only what the code
+change does.
+
+GOOD:
+- "Fix race condition in file watcher initialization"
+- "Add support for custom key bindings"
+
+BAD (never write these):
+- "Fix bug found while testing with Claude Capybara"
+- "1-shotted by claude-opus-4-6"
+- "Generated with Claude Code"
+- "Co-Authored-By: Claude Opus 4.6 <…>"
+```
+
+### Implications for Open-Source Communities
+
+When Anthropic employees use Claude Code to contribute to open-source projects under undercover mode:
+
+1. Code is written by AI, but commits appear human-authored
+2. No `Co-Authored-By: Claude` attribution is added
+3. No "Generated with Claude Code" markers are included
+4. Project maintainers and contributors cannot identify AI-generated contributions
+5. This may conflict with open-source transparency norms and individual project contribution policies
+
+### Model Codename Masking
+
+A separate masking function further protects codenames in any output that does reference a model name:
+
+```typescript
+// src/utils/model/model.ts:386-392
+function maskModelCodename(baseName: string): string {
+  // e.g. capybara-v2-fast → cap*****-v2-fast
+  const [codename = '', ...rest] = baseName.split('-')
+  const masked = codename.slice(0, 3) + '*'.repeat(Math.max(0, codename.length - 3))
+  return [masked, ...rest].join('-')
+}
+```
+
+---
+
+## Hidden Slash Commands
+
+The following slash commands exist in source but are not listed in the standard help output:
+
+| Command | Status | Description |
+|---|---|---|
+| `/btw` | Active | Ask a side question without interrupting the current task |
+| `/stickers` | Active | Opens browser to order Claude Code stickers |
+| `/thinkback` | Active | 2025 Year in Review |
+| `/effort` | Active | Set model effort level for the current session |
+| `/good-claude` | Stub | Hidden placeholder with no implementation |
+| `/bughunter` | Stub | Hidden placeholder with no implementation |

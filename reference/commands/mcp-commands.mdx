@@ -1,0 +1,356 @@
+---
+title: "MCP & Integration Commands"
+description: "Commands for managing MCP servers, authentication, IDE integrations, and external service connections."
+---
+
+These commands connect Claude Code to external services and integrations — MCP servers that extend its tool set, IDE plugins, GitHub Actions, Slack, and the Claude desktop app.
+
+<CardGroup cols={2}>
+  <Card title="/mcp" icon="plug">
+    Manage Model Context Protocol server connections
+  </Card>
+  <Card title="/login" icon="right-to-bracket">
+    Sign in to your Anthropic account
+  </Card>
+  <Card title="/logout" icon="right-from-bracket">
+    Sign out from your Anthropic account
+  </Card>
+  <Card title="/install" icon="download">
+    Install or update the Claude Code binary
+  </Card>
+  <Card title="/install-github-app" icon="github">
+    Set up Claude GitHub Actions
+  </Card>
+  <Card title="/install-slack-app" icon="slack">
+    Install the Claude Slack app
+  </Card>
+  <Card title="/feedback" icon="comment-dots">
+    Submit feedback or report a bug
+  </Card>
+  <Card title="/upgrade" icon="arrow-up">
+    Upgrade to the Max plan
+  </Card>
+</CardGroup>
+
+---
+
+## /mcp
+
+Manages MCP (Model Context Protocol) server connections for the current session. Opens an interactive management panel, or accepts sub-commands for non-interactive use.
+
+**Arguments:** `[enable | disable [server-name]] [reconnect <server-name>]`  
+**Immediate:** yes
+
+### Interactive panel
+
+Running `/mcp` without arguments opens the MCP management panel where you can:
+
+- See all configured servers and their connection status
+- Enable or disable individual servers
+- View error messages for failed connections
+- Trigger a manual reconnect
+
+```
+> /mcp
+```
+
+### Sub-commands
+
+#### Enable / disable servers
+
+```
+> /mcp enable filesystem
+> /mcp disable github
+> /mcp enable all
+> /mcp disable all
+```
+
+When `target` is `all`, every non-IDE server is toggled. When a specific name is given, only that server is affected.
+
+#### Reconnect a server
+
+Force a disconnected server to reconnect:
+
+```
+> /mcp reconnect filesystem
+```
+
+### Configuring MCP servers
+
+MCP servers are declared in `settings.json` (user or project level). Claude Code connects to them at startup and makes their tools available under the `mcp__<server>__<tool>` naming convention.
+
+<Tabs>
+  <Tab title="stdio server">
+    A local server process spawned by Claude Code:
+
+    ```json
+    {
+      "mcpServers": {
+        "filesystem": {
+          "type": "stdio",
+          "command": "npx",
+          "args": ["-y", "@modelcontextprotocol/server-filesystem", "/home/user/project"],
+          "env": {}
+        }
+      }
+    }
+    ```
+  </Tab>
+  <Tab title="HTTP server">
+    A remote server reached over HTTP:
+
+    ```json
+    {
+      "mcpServers": {
+        "myapi": {
+          "type": "http",
+          "url": "https://mcp.example.com/sse",
+          "headers": {
+            "Authorization": "Bearer ${MY_API_TOKEN}"
+          }
+        }
+      }
+    }
+    ```
+  </Tab>
+  <Tab title="Multiple servers">
+    Add as many servers as you need — each gets its own key:
+
+    ```json
+    {
+      "mcpServers": {
+        "filesystem": {
+          "type": "stdio",
+          "command": "npx",
+          "args": ["-y", "@modelcontextprotocol/server-filesystem", "/tmp"]
+        },
+        "github": {
+          "type": "stdio",
+          "command": "npx",
+          "args": ["-y", "@modelcontextprotocol/server-github"],
+          "env": {
+            "GITHUB_PERSONAL_ACCESS_TOKEN": "${GITHUB_TOKEN}"
+          }
+        },
+        "postgres": {
+          "type": "stdio",
+          "command": "npx",
+          "args": ["-y", "@modelcontextprotocol/server-postgres", "${DATABASE_URL}"]
+        }
+      }
+    }
+    ```
+  </Tab>
+</Tabs>
+
+<Note>
+  Environment variable interpolation (`${VAR_NAME}`) is supported in `env` values and in `args`. Variables are resolved from the shell environment at startup.
+</Note>
+
+### MCP server tool naming
+
+Every tool provided by a connected MCP server is available to Claude under the name:
+
+```
+mcp__<server-name>__<tool-name>
+```
+
+For example, a server named `github` with a tool `create_issue` is invoked as `mcp__github__create_issue`. You can add these names to permission allow/deny rules in `settings.json`.
+
+### Authentication
+
+If an MCP server requires OAuth, Claude Code will surface an authentication tool in place of the server's real tools. Claude can call it to start the OAuth flow and return an authorization URL for the user to complete. See [McpAuthTool](/reference/tools/mcp-tools#mcpauthtool) for details.
+
+---
+
+## /login
+
+Signs in to your Anthropic account using OAuth. After authentication, Claude Code uses your account's API key and subscription for all requests.
+
+**Arguments:** none  
+**Non-interactive:** no  
+**Disabled by:** `DISABLE_LOGIN_COMMAND=1` environment variable
+
+### When to use
+
+- First-time setup on a new machine.
+- Switching to a different Anthropic account.
+- After your session token has expired.
+
+```
+> /login
+
+  Opening browser for authentication...
+  Waiting for authorization...
+  ✓ Signed in as user@example.com (Pro)
+```
+
+### API key authentication
+
+If you prefer to use an API key directly, set the `ANTHROPIC_API_KEY` environment variable instead of using `/login`. The `/login` command is disabled when this variable is set.
+
+```bash
+export ANTHROPIC_API_KEY="sk-ant-..."
+claude
+```
+
+---
+
+## /logout
+
+Signs out from the currently authenticated Anthropic account. Revokes the local session token.
+
+**Arguments:** none  
+**Non-interactive:** no  
+**Disabled by:** `DISABLE_LOGOUT_COMMAND=1` environment variable
+
+```
+> /logout
+
+  Signed out from user@example.com.
+```
+
+<Warning>
+  After `/logout`, Claude Code will not be able to make API calls until you run `/login` again or set `ANTHROPIC_API_KEY`.
+</Warning>
+
+---
+
+## /install
+
+Installs or reinstalls the Claude Code native binary to `~/.local/bin/claude`. This is the self-update pathway for users who installed via npm and want to migrate to the native binary, or who need to repair a broken installation.
+
+**Arguments:** `[--force] [--target latest|stable|<version>]`
+
+```
+> /install
+```
+
+<Steps>
+  <Step title="Check existing installation">
+    Detects any existing npm-based or binary installations and reports their state.
+  </Step>
+  <Step title="Clean up npm installation">
+    Removes any npm-installed versions to avoid conflicts.
+  </Step>
+  <Step title="Download binary">
+    Downloads the latest (or specified) release to a temporary path.
+  </Step>
+  <Step title="Install to PATH">
+    Moves the binary to `~/.local/bin/claude` (macOS/Linux) or `%USERPROFILE%\.local\bin\claude.exe` (Windows).
+  </Step>
+  <Step title="Shell setup">
+    Checks that `~/.local/bin` is in `$PATH` and prints instructions if shell configuration needs updating.
+  </Step>
+</Steps>
+
+---
+
+## /install-github-app
+
+Sets up Claude GitHub Actions for a repository, allowing Claude Code to review pull requests and respond to GitHub issues automatically.
+
+**Arguments:** none  
+**Availability:** claude.ai subscribers and direct API users  
+**Non-interactive:** no  
+**Disabled by:** `DISABLE_INSTALL_GITHUB_APP_COMMAND=1`
+
+```
+> /install-github-app
+```
+
+The wizard walks you through:
+
+1. **GitHub OAuth** — authenticate with GitHub to access the target repository.
+2. **Repository selection** — choose which repository to configure.
+3. **API key setup** — create or select a `CLAUDE_CODE_API_KEY` secret in the repository.
+4. **Workflow creation** — add `.github/workflows/claude.yml` to the repository.
+5. **App installation** — optionally install the Claude GitHub App for richer integration.
+
+After setup, Claude Code responds to `@claude` mentions in pull request comments and issues.
+
+<Note>
+  The GitHub Actions integration uses the Anthropic API key you provide, billed against your account. It is not included in the claude.ai subscription.
+</Note>
+
+---
+
+## /install-slack-app
+
+Connects Claude Code to your Slack workspace, enabling you to interact with Claude directly from Slack channels.
+
+**Arguments:** none  
+**Availability:** claude.ai subscribers  
+**Non-interactive:** no
+
+```
+> /install-slack-app
+```
+
+Follows the Slack OAuth flow to authorize the Claude app for your workspace. After installation, mention `@Claude` in any Slack channel or DM to start a conversation.
+
+---
+
+## /desktop
+
+Transfers the current session to the Claude Desktop app. The conversation history is handed off and the session continues in the desktop client.
+
+**Aliases:** `app`  
+**Availability:** claude.ai subscribers, macOS and Windows (x64) only  
+**Arguments:** none
+
+```
+> /desktop
+```
+
+<Info>
+  This command is only available on macOS and Windows (x64). It requires the Claude Desktop app to be installed. Linux is not currently supported.
+</Info>
+
+---
+
+## /ide
+
+Opens the IDE integration setup panel for connecting Claude Code to VS Code, JetBrains IDEs, or other supported editors. The integration enables inline diff views, permission UI, and file-level context sharing.
+
+**Arguments:** none
+
+```
+> /ide
+```
+
+---
+
+## /feedback
+
+Opens a feedback submission dialog for sending bug reports or feature requests to Anthropic.
+
+**Aliases:** `bug`  
+**Arguments:** `[report]`  
+**Non-interactive:** no  
+**Disabled on:** Bedrock, Vertex, Foundry deployments; when `DISABLE_FEEDBACK_COMMAND=1`; when essential-traffic-only mode is active
+
+```
+> /feedback
+> /feedback report
+```
+
+The `report` sub-command pre-selects the bug report category.
+
+---
+
+## /upgrade
+
+Opens the plan upgrade flow for claude.ai subscribers who want to move from the Pro plan to Max for higher rate limits and more Opus access.
+
+**Arguments:** none  
+**Availability:** claude.ai subscribers (non-enterprise)  
+**Disabled by:** `DISABLE_UPGRADE_COMMAND=1`
+
+```
+> /upgrade
+```
+
+<Tip>
+  If you regularly hit Opus rate limits or need longer uninterrupted sessions, `/upgrade` walks you through switching to the Max plan directly in the terminal.
+</Tip>

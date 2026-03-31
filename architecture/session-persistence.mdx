@@ -1,0 +1,109 @@
+---
+title: "Session Persistence"
+description: "How Claude Code persists and resumes sessions — JSONL append-only logs, resume flags, and the persistence strategy for each message type."
+---
+
+Claude Code persists every session as an append-only JSONL log. This lets you resume a previous conversation exactly where you left off, fork a session into a new branch, or recover from crashes without losing work.
+
+## Storage Location
+
+Sessions are stored under `~/.claude/projects/`:
+
+```
+~/.claude/projects/<hash>/sessions/
+└── <session-id>.jsonl    ← append-only log
+```
+
+The `<hash>` is derived from the working directory path, so each project directory gets its own session namespace. Session IDs use the format `<prefix><8 characters>`.
+
+## JSONL Format
+
+Each line in the `.jsonl` file is a self-contained JSON object. Four entry types are written:
+
+```jsonl
+{"type":"user","message":{"role":"user","content":[{"type":"text","text":"Refactor this function"}]},"sessionId":"abc12345","cwd":"/home/user/myproject","timestamp":"2024-01-15T10:30:00.000Z"}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"I'll start by reading the file..."}]},"sessionId":"abc12345","costUSD":0.0012}
+{"type":"progress","toolName":"FileReadTool","toolInput":{"path":"src/utils.ts"},"sessionId":"abc12345"}
+{"type":"system","subtype":"compact_boundary","summary":"The assistant read utils.ts and identified three functions to refactor...","sessionId":"abc12345"}
+```
+
+| Entry type | When written | Notes |
+|---|---|---|
+| `user` | On every user message | Written with `await` (blocking) for crash recovery |
+| `assistant` | On every assistant message | Written fire-and-forget (order-preserving queue) |
+| `progress` | During tool execution | Inline write; deduplicated on next query |
+| `system/compact_boundary` | After autoCompact runs | Marks where summarization occurred |
+
+## Persistence Strategy
+
+Different message types use different write strategies, balancing durability against performance:
+
+```
+User messages  ──> await write      (blocking — ensures user input survives crashes)
+Assistant msgs ──> fire-and-forget  (order-preserving queue — non-blocking)
+Progress       ──> inline write     (dedup on next query to avoid duplicate entries)
+Flush          ──> on result yield / cowork eager flush
+```
+
+The fire-and-forget queue in `src/utils/sessionStorage.ts` (`recordTranscript()`) guarantees ordering without blocking the agent loop. This is the **Fire-and-Forget Write** design pattern — a background queue drains writes while the agent continues processing.
+
+## Resume Flow
+
+<Steps>
+  <Step title="Locate the session log">
+    `getLastSessionLog()` scans `~/.claude/projects/<hash>/sessions/` and returns the most recently modified `.jsonl` file, or the file matching the `--resume <id>` argument.
+  </Step>
+  <Step title="Parse the JSONL">
+    Each line is parsed into its typed entry. Invalid or truncated lines (from a crash mid-write) are skipped.
+  </Step>
+  <Step title="Rebuild messages[]">
+    `user` and `assistant` entries are converted back into `MessageParam` objects and pushed into the `messages[]` array in order. The `compact_boundary` entry signals that older messages have already been summarized.
+  </Step>
+  <Step title="Restore compact boundary">
+    If a `compact_boundary` entry exists, `messages[]` is rebuilt starting from that boundary — the summarized history before it is prepended as a single assistant message containing the compact summary.
+  </Step>
+  <Step title="Continue the session">
+    `QueryEngine.submitMessage()` is called with the next user prompt. The rebuilt `messages[]` provides full conversation context, and the session ID is preserved for continued JSONL appending.
+  </Step>
+</Steps>
+
+## CLI Flags
+
+| Flag | Behavior |
+|---|---|
+| `--continue` | Resumes the last session associated with the current working directory |
+| `--resume <id>` | Resumes a specific session by its session ID |
+| `--fork-session` | Creates a new session ID but copies the history from the last session — diverges from this point forward |
+
+## /resume Slash Command
+
+Within an interactive session, `/resume` lists recent sessions and lets you jump to one without restarting the CLI:
+
+```
+/resume                    ← lists recent sessions for current project
+/resume abc12345           ← jumps directly to session abc12345
+```
+
+The command reads from `~/.claude/projects/<hash>/sessions/`, displays a summary of each session (start time, message count, last message preview), and replaces the current `messages[]` with the selected session's history.
+
+## Session ID Format
+
+Session IDs follow the pattern `<prefix><8 alphanumeric characters>`. The prefix encodes the session type:
+
+| Prefix | Type |
+|---|---|
+| `b` | Bash task |
+| `a` | Agent task |
+| `r` | Remote agent task |
+| `t` | In-process teammate task |
+| (none) | Main interactive session |
+
+Example: `a_f3a9b2c1` is an agent sub-task session.
+
+## Crash Recovery
+
+Because user messages are written with `await` (blocking), a crash during tool execution will always have the user's last message in the JSONL log. On resume, the rebuilt `messages[]` will include that user message, and the agent will re-respond from that point — tools that were interrupted mid-execution will be re-run.
+
+<Warning>
+  If a tool with side effects (e.g., `FileEditTool`, `BashTool`) was mid-execution at crash time, it may run again on resume. Claude Code does not implement idempotency tracking for tool re-execution after crash recovery.
+</Warning>

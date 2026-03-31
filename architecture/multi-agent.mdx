@@ -1,0 +1,208 @@
+---
+title: "Multi-Agent Architecture"
+description: "Sub-agent spawning, team orchestration, swarm mode, and worktree isolation in Claude Code."
+---
+
+Claude Code supports multi-agent execution through a layered system: a main agent can spawn sub-agents in one of four modes, agents can communicate via a shared task board and message-passing tools, and an optional swarm mode (feature-gated) enables autonomous task claiming.
+
+## Architecture Diagram
+
+```
+                    MAIN AGENT
+                    ==========
+                        │
+        ┌───────────────┼───────────────┐
+        ▼               ▼               ▼
+ ┌──────────────┐ ┌──────────┐ ┌──────────────┐
+ │  FORK AGENT  │ │ REMOTE   │ │ IN-PROCESS   │
+ │              │ │ AGENT    │ │ TEAMMATE     │
+ │ Fork process │ │ Bridge   │ │ Same process │
+ │ Shared cache │ │ session  │ │ Async context│
+ │ Fresh msgs[] │ │ Isolated │ │ Shared state │
+ └──────────────┘ └──────────┘ └──────────────┘
+
+COMMUNICATION:
+├─ SendMessageTool     → agent-to-agent messages
+├─ TaskCreate/Update   → shared task board
+└─ TeamCreate/Delete   → team lifecycle management
+
+SWARM MODE (feature-gated: COORDINATOR_MODE):
+┌─────────────────────────────────────────────┐
+│  Lead Agent                                 │
+│    ├── Teammate A ──> claims Task 1         │
+│    ├── Teammate B ──> claims Task 2         │
+│    └── Teammate C ──> claims Task 3         │
+│                                             │
+│  Shared: task board, message inbox          │
+│  Isolated: messages[], file cache, cwd      │
+└─────────────────────────────────────────────┘
+```
+
+## Spawn Modes
+
+<Tabs>
+  <Tab title="default (in-process)">
+    The agent runs in the same process as the parent. State is shared via `AsyncLocalStorage` context isolation. This is the lowest-overhead spawn mode — no process fork, no worktree creation.
+
+    ```
+    Main Process
+    └── AsyncLocalStorage context A  (main agent)
+    └── AsyncLocalStorage context B  (sub-agent, in-process)
+    ```
+
+    Use this for lightweight sub-tasks that do not need file isolation.
+  </Tab>
+  <Tab title="fork (child process)">
+    The sub-agent runs in a forked child process. It receives a **fresh `messages[]`** — the parent's conversation history is not passed down — keeping the main context clean. The forked agent shares the parent's file-state cache for read efficiency.
+
+    ```
+    Main Process  ──fork()──>  Child Process
+        │                          │
+    messages[]               fresh messages[]
+    file cache ──────────→   shared file cache
+    ```
+
+    Implemented in `src/tools/AgentTool/forkSubagent.ts` and task type `local_agent`.
+  </Tab>
+  <Tab title="worktree (isolated git worktree + fork)">
+    Combines `fork` with an isolated git worktree. The agent runs in a separate working directory created by `git worktree add`. Each worktree has its own `cwd`, so concurrent agents can edit different files without conflicts.
+
+    ```
+    repo/
+    ├── main/           ← main agent's cwd
+    └── .worktrees/
+        ├── agent-a/    ← Teammate A's isolated worktree
+        └── agent-b/    ← Teammate B's isolated worktree
+    ```
+
+    Managed by `EnterWorktreeTool` / `ExitWorktreeTool` and `src/utils/worktree.ts`.
+  </Tab>
+  <Tab title="remote (bridge)">
+    The sub-agent runs in a remote Claude Code instance or container, connected via the Bridge Layer. Communication flows through `bridgeMain.ts` over HTTP with JWT authentication.
+
+    ```
+    Main CLI  ──HTTP──>  Remote Container
+                              │
+                         Claude Code CLI
+                         (isolated session)
+    ```
+
+    Implemented via `RemoteAgentTask` in `src/tasks/RemoteAgentTask/`.
+  </Tab>
+</Tabs>
+
+## Spawning a Sub-Agent with AgentTool
+
+<Steps>
+  <Step title="Main agent calls AgentTool">
+    The main agent invokes `AgentTool` with a task description and the desired spawn mode. `AgentTool` is registered in the tool dispatch map and implements the standard `Tool<Input, Output, Progress>` interface.
+  </Step>
+  <Step title="AgentTool creates a Task record">
+    A new `Task` with a prefixed ID (e.g., `a_<8chars>` for agent tasks) is created and persisted. Task IDs encode their type: `b=bash`, `a=agent`, `r=remote`, `t=team`.
+  </Step>
+  <Step title="Sub-agent starts with fresh messages[]">
+    For fork/worktree modes, the child process starts with an empty `messages[]`. The task description becomes the first user message. The child has its own `QueryEngine` instance.
+  </Step>
+  <Step title="Results flow back to parent">
+    The sub-agent's output is collected and returned as a `tool_result` block in the parent's `messages[]`. The parent agent continues its loop with the sub-agent's result available.
+  </Step>
+</Steps>
+
+## Agent Communication
+
+### SendMessageTool
+
+`SendMessageTool` provides request-response messaging between agents. One agent sends a message to another agent's inbox by task ID; the recipient polls for new messages in its idle cycle.
+
+```
+Agent A                           Agent B
+  │                                  │
+  ├── SendMessageTool(to: b_xyz)     │
+  │        │                         │
+  │        └──> writes to inbox ──> │
+  │                                  ├── reads message
+  │                                  ├── processes request
+  │                                  └── SendMessageTool(to: a_abc, reply)
+  │                                         │
+  └─────────────────────────────────────────┘
+```
+
+### TaskCreate / TaskUpdate / TaskGet / TaskList
+
+Agents share a file-based task board. Any agent can create tasks, claim them, update their status, and list all open work.
+
+| Tool | Description |
+|---|---|
+| `TaskCreateTool` | Creates a new task with description, priority, and optional dependencies |
+| `TaskUpdateTool` | Updates status (`open`, `in_progress`, `done`, `blocked`) |
+| `TaskGetTool` | Retrieves a single task by ID |
+| `TaskListTool` | Lists all tasks, optionally filtered by status or assignee |
+| `TaskStopTool` | Cancels a running task |
+| `TaskOutputTool` | Reads streamed output from a background task |
+
+### TeamCreate / TeamDelete
+
+`TeamCreateTool` spawns a set of named teammates as `InProcessTeammateTask` instances. Each teammate gets an async mailbox and runs concurrently in the same process. `TeamDeleteTool` shuts down the team and cleans up resources.
+
+## Coordinator Mode (Swarm)
+
+<Warning>
+  Coordinator mode is controlled by the `COORDINATOR_MODE` feature flag. This module (`coordinator/workerAgent.js`) is not included in the published npm package — it exists only in Anthropic's internal monorepo.
+</Warning>
+
+When enabled, `coordinatorMode.ts` gives each teammate an **idle cycle**: when a teammate has no active work, it automatically scans the shared task board and claims the highest-priority unclaimed task. This eliminates the need for a lead agent to manually assign work.
+
+```
+Idle Teammate
+      │
+      ▼
+poll TaskList(status: 'open')
+      │
+  tasks found?
+      │
+   ┌──┴──┐
+  yes    no
+   │      │
+   ▼      └── sleep(pollIntervalMs)
+TaskUpdate(claim: self)        │
+   │                           └──> loop
+   ▼
+executeTask()
+```
+
+The coordinator context is injected via `getCoordinatorUserContext()` from `QueryEngine.ts:115-117`:
+
+```typescript
+const getCoordinatorUserContext: (
+  mcpClients: ReadonlyArray<{ name: string }>,
+  scratchpadDir?: string,
+) => { [k: string]: string } = feature('COORDINATOR_MODE')
+  ? require('./coordinator/coordinatorMode.js').getCoordinatorUserContext
+  : () => ({})
+```
+
+## Worktree Isolation (s12)
+
+`EnterWorktreeTool` creates a new git worktree for the calling agent and changes its `cwd` to the new directory. `ExitWorktreeTool` removes the worktree and restores the original `cwd`. Worktrees are bound to task IDs so cleanup is deterministic even if the agent crashes.
+
+```
+EnterWorktreeTool(taskId: "a_abc123")
+      │
+      ▼
+git worktree add .worktrees/a_abc123
+      │
+      ▼
+setCwd(.worktrees/a_abc123)
+      │
+   [agent works in isolation]
+      │
+ExitWorktreeTool(taskId: "a_abc123")
+      │
+      ▼
+git worktree remove .worktrees/a_abc123
+      │
+      ▼
+restoreCwd(original)
+```
+
+The worktree utilities live in `src/utils/worktree.ts` and are called from `bridgeMain.ts` (`createAgentWorktree`, `removeAgentWorktree`).

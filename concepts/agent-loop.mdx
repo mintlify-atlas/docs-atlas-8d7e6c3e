@@ -1,0 +1,119 @@
+---
+title: "The Agent Loop"
+description: "How Claude Code's core agent loop works — from user input through tool execution and back."
+---
+
+The agent loop is the beating heart of Claude Code. Every interaction — interactive or non-interactive — runs through the same `while`-loop in `src/query.ts`. The loop calls the Claude API, inspects the `stop_reason`, executes any requested tools, appends the results to the message history, and calls the API again. It stops when the model returns a text response with no pending tool calls.
+
+## The core loop
+
+```
+                    THE CORE LOOP
+                    =============
+
+    User --> messages[] --> Claude API --> response
+                                          |
+                                stop_reason == "tool_use"?
+                               /                          \
+                             yes                           no
+                              |                             |
+                        execute tools                    return text
+                        append tool_result
+                        loop back -----------------> messages[]
+```
+
+That is the minimal agent loop. Claude Code wraps this loop with a production-grade harness: permissions, streaming, concurrency, compaction, sub-agents, persistence, and MCP.
+
+## Single query lifecycle
+
+<Steps>
+  <Step title="processUserInput()">
+    Parse slash commands (e.g., `/compact`, `/memory`), build the `UserMessage`, and attach any file context. Slash commands that produce an immediate response return early here without touching the API.
+  </Step>
+  <Step title="fetchSystemPromptParts()">
+    Assemble the system prompt from tool descriptions, permission context, and any `CLAUDE.md` memory files discovered lazily under the current working directory. The result is a `SystemPrompt` branded string array.
+  </Step>
+  <Step title="recordTranscript()">
+    Persist the user message to disk as an append-only JSONL entry under `~/.claude/projects/<hash>/sessions/<session-id>.jsonl`. This write is blocking (`await`) to protect against crash loss.
+  </Step>
+  <Step title="normalizeMessagesForAPI()">
+    Strip UI-only fields from the messages array and, if the context window is near capacity, trigger `autoCompact()` to summarize older messages before the API call.
+  </Step>
+  <Step title="Claude API (streaming)">
+    POST to `/v1/messages` with the full tool list and assembled system prompt. Stream events arrive as `message_start` → `content_block_delta` → `message_stop`. Text blocks are yielded immediately to the consumer (SDK or REPL).
+  </Step>
+  <Step title="StreamingToolExecutor">
+    When a `tool_use` block arrives, the executor partitions tool calls into two buckets: concurrency-safe tools that can run in parallel (`isConcurrencySafe() === true`), and serial tools that must run one at a time. The partition is determined per-tool per-input.
+  </Step>
+  <Step title="canUseTool() — permission check">
+    Before executing each tool, the permission system runs: pre-tool hooks → allow/deny rules → interactive prompt (if needed). A `DENY` result appends a `tool_result` error and continues the loop without executing the tool.
+  </Step>
+  <Step title="tool.call()">
+    Execute the tool (`BashTool`, `FileReadTool`, `FileEditTool`, `WebFetchTool`, etc.) and collect the result. Long-running tools stream progress events back to the UI via the `onProgress` callback.
+  </Step>
+  <Step title="append tool_result and loop">
+    Push the tool result onto `messages[]`, fire off a `recordTranscript()` write (fire-and-forget for assistant messages, order-preserving queue), and loop back to step 4 for another API call with the updated history.
+  </Step>
+  <Step title="yield result message">
+    When `stop_reason` is not `"tool_use"`, yield the final `SDKMessage` to the consumer, including the response text, token usage, accumulated cost, and session ID.
+  </Step>
+</Steps>
+
+## Architecture layers
+
+```
+┌─────────────────────────────────────────────────────────────────────┐
+│                         ENTRY LAYER                                 │
+│  cli.tsx ──> main.tsx ──> REPL.tsx (interactive)                   │
+│                     └──> QueryEngine.ts (headless/SDK)              │
+└──────────────────────────────┬──────────────────────────────────────┘
+                               │
+                               ▼
+┌─────────────────────────────────────────────────────────────────────┐
+│                       QUERY ENGINE                                  │
+│  submitMessage(prompt) ──> AsyncGenerator<SDKMessage>               │
+│    │                                                                │
+│    ├── fetchSystemPromptParts()    ──> assemble system prompt       │
+│    ├── processUserInput()          ──> handle /commands             │
+│    ├── query()                     ──> main agent loop              │
+│    │     ├── StreamingToolExecutor ──> parallel tool execution      │
+│    │     ├── autoCompact()         ──> context compression          │
+│    │     └── runTools()            ──> tool orchestration           │
+│    └── yield SDKMessage            ──> stream to consumer           │
+└─────────────────────────────────────────────────────────────────────┘
+```
+
+## The 12 progressive harness mechanisms
+
+The source code demonstrates 12 layered mechanisms that a production AI agent harness needs beyond the minimal loop. Each builds on the previous.
+
+| # | Mechanism | What it adds |
+|---|-----------|-------------|
+| s01 | **The loop** | `query.ts`: the `while`-loop that calls the API, checks `stop_reason`, executes tools, appends results. One loop and Bash is all you need to start. |
+| s02 | **Tool dispatch** | `Tool.ts` + `tools.ts`: every tool registers into the dispatch map. The loop stays identical. `buildTool()` factory provides safe defaults. Adding a tool = adding one handler. |
+| s03 | **Planning** | `EnterPlanModeTool` / `ExitPlanModeTool` + `TodoWriteTool`: list steps first, then execute. Tracked in `AppState` as `mode: 'plan'`. |
+| s04 | **Sub-agents** | `AgentTool` + `forkSubagent.ts`: each child gets a fresh `messages[]`, keeping the parent conversation clean. Four spawn modes: `default`, `fork`, `worktree`, `remote`. |
+| s05 | **Knowledge on demand** | `SkillTool` + `memdir/`: inject knowledge via `tool_result`, not the system prompt. `CLAUDE.md` files loaded lazily per directory. |
+| s06 | **Context compression** | `services/compact/`: three-layer strategy — `autoCompact` (summarize) + `snipCompact` (trim) + `contextCollapse` (restructure). |
+| s07 | **Persistent tasks** | `TaskCreateTool` / `TaskUpdateTool` / `TaskGetTool` / `TaskListTool`: file-based task graph with status tracking and persistence across restarts. |
+| s08 | **Background tasks** | `DreamTask` + `LocalShellTask`: daemon threads run slow operations in the background; completions are injected as notifications. |
+| s09 | **Agent teams** | `TeamCreateTool` / `TeamDeleteTool` + `InProcessTeammateTask`: persistent teammates with async mailboxes for parallel workstreams. |
+| s10 | **Team protocols** | `SendMessageTool`: one request-response pattern drives all inter-agent negotiation. |
+| s11 | **Autonomous agents** | `coordinator/coordinatorMode.ts` (feature-gated `COORDINATOR_MODE`): idle-scan-and-claim loop — workers self-assign tasks without the lead assigning each one. |
+| s12 | **Worktree isolation** | `EnterWorktreeTool` / `ExitWorktreeTool`: sub-agents bound to isolated git worktrees; tasks manage goals, worktrees manage directories. |
+
+## Key source files
+
+| File | Role |
+|------|------|
+| `src/query.ts` | Main agent loop (~785 KB, the largest file in the repo) |
+| `src/QueryEngine.ts` | SDK/headless query lifecycle, `AsyncGenerator<SDKMessage>` |
+| `src/main.tsx` | REPL bootstrap, 4,683 lines |
+| `src/Tool.ts` | `Tool<Input, Output, Progress>` interface and `buildTool()` factory |
+| `src/tools.ts` | Tool registry, presets, and feature-gated conditional imports |
+| `src/services/tools/StreamingToolExecutor.ts` | Parallel tool runner with concurrency partitioning |
+| `src/services/tools/toolOrchestration.ts` | Batch tool orchestration (`runTools()`) |
+
+<Note>
+`src/query.ts` is ~785 KB — the largest file in the repository. It contains the streaming tool executor, context compaction logic, permission orchestration, and the main agent loop all in one place.
+</Note>
